@@ -10,7 +10,7 @@ require (
 	github.com/Muxcore-Media/downloader-native-torrent v0.1.0
 	github.com/Muxcore-Media/indexer-prowlarr v0.1.0
 	github.com/Muxcore-Media/media-custom-formats v0.1.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.52.0
 )
