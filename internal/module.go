@@ -20,9 +20,11 @@ import (
 
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 
+	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
 	downloaderv1 "github.com/Muxcore-Media/downloader-native-torrent/proto/downloaderv1"
-	indexerv1 "github.com/Muxcore-Media/indexer-prowlarr/proto/indexerv1"
 	formatsv1 "github.com/Muxcore-Media/media-custom-formats/proto/formatsv1"
+	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	eventsv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/events/v1"
@@ -49,6 +51,10 @@ type Module struct {
 	downloaderClient downloaderv1.TorrentServiceClient
 	formatsConn      *grpc.ClientConn
 	formatsClient    formatsv1.FormatServiceClient
+	moviesConn       *grpc.ClientConn
+	moviesClient     mgmntv1.MovieManagementServiceClient
+	tvConn           *grpc.ClientConn
+	tvClient         tvmgmtv1.TvManagementServiceClient
 }
 
 type Config struct {
@@ -122,6 +128,7 @@ func (m *Module) Init(ctx context.Context) error {
 			episode_number INTEGER DEFAULT 0,
 			monitored      INTEGER DEFAULT 1,
 			missing        INTEGER DEFAULT 1,
+			quality_profile_id TEXT DEFAULT '',
 			last_searched  TEXT,
 			created_at     TEXT NOT NULL,
 			updated_at     TEXT NOT NULL,
@@ -130,6 +137,20 @@ func (m *Module) Init(ctx context.Context) error {
 	`); err != nil {
 		db.Close()
 		return fmt.Errorf("create wanted_items table: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE wanted_items ADD COLUMN quality_profile_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return fmt.Errorf("migrate wanted_items: %w", err)
+	}
+	for _, col := range []string{
+		`ALTER TABLE wanted_items ADD COLUMN absolute_number INTEGER DEFAULT 0`,
+		`ALTER TABLE wanted_items ADD COLUMN series_type TEXT DEFAULT ''`,
+		`ALTER TABLE wanted_items ADD COLUMN series_id TEXT DEFAULT ''`,
+	} {
+		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return fmt.Errorf("migrate wanted_items: %w", err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS download_history (
@@ -205,6 +226,15 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.downloaderConn != nil {
 		m.downloaderConn.Close()
+	}
+	if m.formatsConn != nil {
+		m.formatsConn.Close()
+	}
+	if m.moviesConn != nil {
+		m.moviesConn.Close()
+	}
+	if m.tvConn != nil {
+		m.tvConn.Close()
 	}
 	m.mu.Lock()
 	if m.db != nil {
@@ -336,6 +366,52 @@ func (m *Module) ensureFormats(ctx context.Context) error {
 	return nil
 }
 
+func (m *Module) ensureMovies(ctx context.Context) error {
+	m.mu.RLock()
+	if m.moviesClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+
+	addr, err := m.findModuleByCapability(ctx, "media.library.movies")
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial movies: %w", err)
+	}
+	m.mu.Lock()
+	m.moviesConn = conn
+	m.moviesClient = mgmntv1.NewMovieManagementServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) ensureTV(ctx context.Context) error {
+	m.mu.RLock()
+	if m.tvClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+
+	addr, err := m.findModuleByCapability(ctx, "media.library.tv")
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial tvshows: %w", err)
+	}
+	m.mu.Lock()
+	m.tvConn = conn
+	m.tvClient = tvmgmtv1.NewTvManagementServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
 // ── Event Subscriptions ─────────────────────────────────────────
 
 func (m *Module) subscribeToMediaEvents() {
@@ -348,6 +424,10 @@ func (m *Module) subscribeToMediaEvents() {
 	eventTypes := []string{
 		contracts.EventMovieAdded,
 		contracts.EventTVAdded,
+		contracts.EventMovieRemoved,
+		contracts.EventTVRemoved,
+		contracts.EventMovieFileAdded,
+		contracts.EventTVEpisodeFileAdded,
 		contracts.EventFileImported,
 	}
 
@@ -368,22 +448,35 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 		case contracts.EventMovieAdded:
 			var payload contracts.MovieAddedPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.MovieID != "" {
-				m.AddToQueue(context.Background(), &automationv1.AddToQueueRequest{
-					ItemType: "movie",
-					ItemId:   payload.MovieID,
-					TmdbId:   payload.TMDBID,
-					Title:    payload.Title,
+				m.upsertWanted(context.Background(), wantedEntry{
+					ItemType: "movie", ItemID: payload.MovieID,
+					TmdbID: payload.TMDBID, Title: payload.Title,
 				})
 			}
 		case contracts.EventTVAdded:
 			var payload contracts.TVAddedPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.SeriesID != "" {
-				m.AddToQueue(context.Background(), &automationv1.AddToQueueRequest{
-					ItemType: "tv",
-					ItemId:   payload.SeriesID,
-					TmdbId:   payload.TMDBID,
-					Title:    payload.Name,
-				})
+				go m.syncTVSeriesWithRetry(payload.SeriesID)
+			}
+		case contracts.EventMovieRemoved:
+			var payload contracts.MovieRemovedPayload
+			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.MovieID != "" {
+				m.removeWanted(context.Background(), "movie", payload.MovieID)
+			}
+		case contracts.EventTVRemoved:
+			var payload contracts.TVRemovedPayload
+			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.SeriesID != "" {
+				m.syncWantedFromLibraries(context.Background())
+			}
+		case contracts.EventMovieFileAdded:
+			var payload contracts.MovieFileAddedPayload
+			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.MovieID != "" {
+				m.removeWanted(context.Background(), "movie", payload.MovieID)
+			}
+		case contracts.EventTVEpisodeFileAdded:
+			var payload contracts.TVEpisodeFileAddedPayload
+			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.EpisodeID != "" {
+				m.removeWanted(context.Background(), "tv", payload.EpisodeID)
 			}
 		case contracts.EventFileImported:
 			var payload contracts.FileImportedPayload
@@ -393,6 +486,245 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 		}
 	}
 	cancel()
+}
+
+func (m *Module) syncTVSeriesWithRetry(seriesID string) {
+	for i := 0; i < 5; i++ {
+		time.Sleep(2 * time.Second)
+		n, err := m.syncWantedTV(context.Background(), seriesID, nil)
+		if err != nil {
+			slog.Debug("tv series wanted sync", "series", seriesID, "attempt", i+1, "error", err)
+			continue
+		}
+		if n > 0 || i == 4 {
+			return
+		}
+	}
+}
+
+// ── Library sync (wanted cache) ────────────────────────────────
+
+type wantedEntry struct {
+	ItemType         string
+	ItemID           string
+	TmdbID           int32
+	Title            string
+	Year             int32
+	SeasonNumber     int32
+	EpisodeNumber    int32
+	AbsoluteNumber   int32
+	SeriesType       string
+	SeriesID         string
+	QualityProfileID string
+}
+
+func (m *Module) syncWantedFromLibraries(ctx context.Context) {
+	seen := make(map[string]struct{})
+	moviesOK, tvOK := false, false
+	if _, err := m.syncWantedMovies(ctx, seen); err != nil {
+		slog.Debug("sync missing movies", "error", err)
+	} else {
+		moviesOK = true
+	}
+	if _, err := m.syncWantedTV(ctx, "", seen); err != nil {
+		slog.Debug("sync missing episodes", "error", err)
+	} else {
+		tvOK = true
+	}
+	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK)
+}
+
+func (m *Module) syncWantedMovies(ctx context.Context, seen map[string]struct{}) (int, error) {
+	if err := m.ensureMovies(ctx); err != nil {
+		return 0, err
+	}
+	m.mu.RLock()
+	client := m.moviesClient
+	m.mu.RUnlock()
+
+	page := int32(1)
+	totalUpserted := 0
+	for {
+		resp, err := client.ListMissing(ctx, &mgmntv1.ListMissingRequest{Page: page, PageSize: 100})
+		if err != nil {
+			return totalUpserted, err
+		}
+		for _, item := range resp.GetItems() {
+			if seen != nil {
+				seen["movie:"+item.GetMovieId()] = struct{}{}
+			}
+			m.upsertWanted(ctx, wantedEntry{
+				ItemType: "movie", ItemID: item.GetMovieId(),
+				TmdbID: item.GetTmdbId(), Title: item.GetTitle(), Year: item.GetYear(),
+				QualityProfileID: item.GetQualityProfileId(),
+			})
+			totalUpserted++
+		}
+		if int(page)*int(resp.GetPageSize()) >= int(resp.GetTotal()) || len(resp.GetItems()) == 0 {
+			break
+		}
+		page++
+	}
+	return totalUpserted, nil
+}
+
+func (m *Module) syncWantedTV(ctx context.Context, seriesID string, seen map[string]struct{}) (int, error) {
+	if err := m.ensureTV(ctx); err != nil {
+		return 0, err
+	}
+	m.mu.RLock()
+	client := m.tvClient
+	m.mu.RUnlock()
+
+	type seasonKey struct {
+		seriesID string
+		season   int32
+	}
+	type seasonBucket struct {
+		items []*tvmgmtv1.MissingEpisodeItem
+	}
+	buckets := map[seasonKey]*seasonBucket{}
+
+	page := int32(1)
+	for {
+		resp, err := client.ListMissing(ctx, &tvmgmtv1.ListMissingRequest{
+			Page: page, PageSize: 100, SeriesId: seriesID,
+		})
+		if err != nil {
+			return 0, err
+		}
+		for _, item := range resp.GetItems() {
+			if seen != nil {
+				seen["tv:"+item.GetEpisodeId()] = struct{}{}
+			}
+			k := seasonKey{seriesID: item.GetSeriesId(), season: item.GetSeasonNumber()}
+			b := buckets[k]
+			if b == nil {
+				b = &seasonBucket{}
+				buckets[k] = b
+			}
+			b.items = append(b.items, item)
+		}
+		if int(page)*int(resp.GetPageSize()) >= int(resp.GetTotal()) || len(resp.GetItems()) == 0 {
+			break
+		}
+		page++
+	}
+
+	totalUpserted := 0
+	for k, b := range buckets {
+		if len(b.items) == 0 {
+			continue
+		}
+		sample := b.items[0]
+		if seasonPackEligible(len(b.items)) {
+			packID := fmt.Sprintf("%s:S%d:pack", k.seriesID, k.season)
+			if seen != nil {
+				seen["tv:"+packID] = struct{}{}
+			}
+			m.upsertWanted(ctx, wantedEntry{
+				ItemType: "tv", ItemID: packID,
+				TmdbID: sample.GetTmdbId(), Title: sample.GetTitle(), Year: sample.GetYear(),
+				SeasonNumber: k.season, EpisodeNumber: 0,
+				SeriesType: sample.GetSeriesType(), SeriesID: k.seriesID,
+				QualityProfileID: sample.GetQualityProfileId(),
+			})
+			totalUpserted++
+			continue
+		}
+		for _, item := range b.items {
+			m.upsertWanted(ctx, wantedEntry{
+				ItemType: "tv", ItemID: item.GetEpisodeId(),
+				TmdbID: item.GetTmdbId(), Title: item.GetTitle(), Year: item.GetYear(),
+				SeasonNumber: item.GetSeasonNumber(), EpisodeNumber: item.GetEpisodeNumber(),
+				AbsoluteNumber: item.GetAbsoluteNumber(), SeriesType: item.GetSeriesType(),
+				SeriesID: item.GetSeriesId(), QualityProfileID: item.GetQualityProfileId(),
+			})
+			totalUpserted++
+		}
+	}
+	return totalUpserted, nil
+}
+
+func seasonPackEligible(missingCount int) bool {
+	return missingCount >= 3
+}
+
+func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK bool) {
+	if !moviesOK && !tvOK {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	rows, err := m.db.QueryContext(ctx, `SELECT item_type, item_id FROM wanted_items WHERE missing = 1`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var toDelete [][2]string
+	for rows.Next() {
+		var itemType, itemID string
+		if err := rows.Scan(&itemType, &itemID); err != nil {
+			continue
+		}
+		if itemType == "movie" && !moviesOK {
+			continue
+		}
+		if itemType == "tv" && !tvOK {
+			continue
+		}
+		if _, ok := seen[itemType+":"+itemID]; !ok {
+			toDelete = append(toDelete, [2]string{itemType, itemID})
+		}
+	}
+	for _, d := range toDelete {
+		m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, d[0], d[1])
+	}
+}
+
+func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil || e.ItemID == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	id := fmt.Sprintf("w_%s_%s", e.ItemType, e.ItemID)
+	_, err := m.db.ExecContext(ctx,
+		`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, quality_profile_id, absolute_number, series_type, series_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(item_type, item_id) DO UPDATE SET
+		   tmdb_id = excluded.tmdb_id,
+		   title = excluded.title,
+		   year = excluded.year,
+		   season_number = excluded.season_number,
+		   episode_number = excluded.episode_number,
+		   monitored = 1,
+		   missing = 1,
+		   quality_profile_id = excluded.quality_profile_id,
+		   absolute_number = excluded.absolute_number,
+		   series_type = excluded.series_type,
+		   series_id = excluded.series_id,
+		   updated_at = excluded.updated_at`,
+		id, e.ItemType, e.ItemID, e.TmdbID, e.Title, e.Year,
+		e.SeasonNumber, e.EpisodeNumber, e.QualityProfileID,
+		e.AbsoluteNumber, e.SeriesType, e.SeriesID, now, now,
+	)
+	if err != nil {
+		slog.Debug("upsert wanted", "error", err, "item", e.ItemID)
+	}
+}
+
+func (m *Module) removeWanted(ctx context.Context, itemType, itemID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil || itemID == "" {
+		return
+	}
+	m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, itemID)
 }
 
 // ── RSS Sync Loop ──────────────────────────────────────────────
@@ -412,6 +744,7 @@ func (m *Module) rssSyncLoop() {
 
 func (m *Module) rssSync() {
 	slog.Debug("rss sync cycle starting")
+	m.syncWantedFromLibraries(context.Background())
 	m.searchQueuedItems()
 }
 
@@ -423,7 +756,7 @@ func (m *Module) searchQueuedItems() {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, item_type, tmdb_id, title, year, season_number, episode_number FROM wanted_items WHERE monitored = 1 AND missing = 1`)
+	rows, err := db.Query(`SELECT id, item_type, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type FROM wanted_items WHERE monitored = 1 AND missing = 1`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
@@ -431,18 +764,18 @@ func (m *Module) searchQueuedItems() {
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, itemType, title string
-		var tmdbID, year, seasonNum, epNum int64
-		if err := rows.Scan(&id, &itemType, &tmdbID, &title, &year, &seasonNum, &epNum); err != nil {
+		var id, itemType, title, profileID, seriesType string
+		var tmdbID, year, seasonNum, epNum, absNum int64
+		if err := rows.Scan(&id, &itemType, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
-		m.searchAndStore(context.Background(), id, itemType, title, int(tmdbID), int(year), int(seasonNum), int(epNum))
+		m.searchAndStore(context.Background(), id, itemType, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID)
 	}
 }
 
-func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title string, tmdbID, year, season, episode int) {
-	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, 50)
+func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string) {
+	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID)
 	if len(results) > 0 {
 		best := results[0]
 		slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score)
@@ -462,10 +795,6 @@ func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title str
 			})
 			if err != nil {
 				slog.Warn("dispatch failed for "+title, "item", itemID, "error", err)
-			} else {
-				m.mu.Lock()
-				m.db.Exec(`UPDATE wanted_items SET missing = 0, updated_at = datetime('now') WHERE id = ?`, itemID)
-				m.mu.Unlock()
 			}
 		}
 	}
@@ -502,23 +831,25 @@ type scoredRelease struct {
 	Score            int
 }
 
-func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.IndexerResult, title string) []scoredRelease {
+func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title, profileID string) []scoredRelease {
 	var scored []scoredRelease
 	if err := m.ensureFormats(ctx); err == nil {
 		m.mu.RLock()
 		fc := m.formatsClient
 		m.mu.RUnlock()
+		minScore := m.profileMinScore(ctx, profileID)
 		for _, r := range results {
 			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
-				Title:   r.GetTitle(),
-				Size:    r.GetSize(),
-				Seeders: r.GetSeeders(),
+				Title:     r.GetTitle(),
+				Size:      r.GetSize(),
+				Seeders:   r.GetSeeders(),
+				ProfileId: profileID,
 			})
 			if err != nil {
 				continue
 			}
 			s := int(resp.GetTotalScore())
-			if s > 0 {
+			if s > 0 && (minScore <= 0 || s >= minScore) {
 				scored = append(scored, scoredRelease{
 					GUID:             r.GetGuid(),
 					Title:            r.GetTitle(),
@@ -546,7 +877,46 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 	return scored
 }
 
-func scoreReleases(results []*indexerv1.IndexerResult, title string) []scoredRelease {
+func (m *Module) profileMinScore(ctx context.Context, profileID string) int {
+	if err := m.ensureFormats(ctx); err != nil {
+		return 0
+	}
+	m.mu.RLock()
+	fc := m.formatsClient
+	m.mu.RUnlock()
+	resp, err := fc.ListProfiles(ctx, &formatsv1.ListProfilesRequest{})
+	if err != nil {
+		return 0
+	}
+	profiles := resp.GetProfiles()
+	if profileID != "" {
+		for _, p := range profiles {
+			if p.GetId() == profileID {
+				return int(p.GetMinScore())
+			}
+		}
+		return 0
+	}
+	if len(profiles) > 0 {
+		return int(profiles[0].GetMinScore())
+	}
+	return 0
+}
+
+func filterByMinScore(scored []scoredRelease, minScore int) []scoredRelease {
+	if minScore <= 0 {
+		return scored
+	}
+	out := make([]scoredRelease, 0, len(scored))
+	for _, s := range scored {
+		if s.Score >= minScore {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func scoreReleases(results []*indexerv1.SearchResult, title string) []scoredRelease {
 	var scored []scoredRelease
 	for _, r := range results {
 		s := scoreRelease(r, title)
@@ -574,7 +944,7 @@ func scoreReleases(results []*indexerv1.IndexerResult, title string) []scoredRel
 	return scored
 }
 
-func scoreRelease(r *indexerv1.IndexerResult, title string) int {
+func scoreRelease(r *indexerv1.SearchResult, title string) int {
 	score := 0
 	name := r.GetTitle()
 
@@ -665,7 +1035,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	}
 
 	results := m.searchWithIndexer(ctx, req.GetItemType(), req.GetQuery(),
-		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()), int(req.GetLimit()))
+		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()), 0, "", int(req.GetLimit()), req.GetQualityProfileId())
 
 	var matches []*automationv1.ReleaseMatch
 	for _, r := range results {
@@ -687,7 +1057,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	return &automationv1.SearchItemResponse{Matches: matches}, nil
 }
 
-func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, limit int) []scoredRelease {
+func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType string, limit int, profileID string) []scoredRelease {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -713,21 +1083,72 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		maxLimit = 50
 	}
 
+	searchQuery := query
+	wantPack := itemType == "tv" && season > 0 && episode == 0
+	if wantPack {
+		searchQuery = fmt.Sprintf("%s S%02d", query, season)
+	} else if seriesType == "anime" && absolute > 0 {
+		searchQuery = fmt.Sprintf("%s %d", query, absolute)
+	} else if itemType == "tv" && season > 0 && episode > 0 {
+		searchQuery = fmt.Sprintf("%s S%02dE%02d", query, season, episode)
+	}
+
 	resp, err := client.Search(ctx, &indexerv1.SearchRequest{
-		Query:   query,
-		Type:    searchType,
-		Year:    int32(year),
-		Season:  int32(season),
-		Episode: int32(episode),
-		Limit:   maxLimit,
+		Query:    searchQuery,
+		Type:     searchType,
+		Year:     int32(year),
+		Season:   int32(season),
+		Episode:  int32(episode),
+		Absolute: int32(absolute),
+		Limit:    maxLimit,
 	})
 	if err != nil {
 		slog.Debug("indexer search failed", "error", err)
 		return nil
 	}
 
-	scored := m.scoreWithFormatsFallback(ctx, resp.GetResults(), query)
+	scored := m.scoreWithFormatsFallback(ctx, resp.GetResults(), query, profileID)
+	if wantPack || (seriesType == "anime" && absolute > 0) {
+		var filtered []scoredRelease
+		for i := range scored {
+			scored[i].Score += scoreTVReleaseBoost(scored[i].Title, season, episode, absolute, wantPack, seriesType)
+			if scored[i].Score > 0 {
+				filtered = append(filtered, scored[i])
+			}
+		}
+		scored = filtered
+		sortScoredDesc(scored)
+	}
 	return scored
+}
+
+var (
+	reSeasonPackTitle = regexp.MustCompile(`(?i)(?:season[.\s_-]*pack|complete[.\s_-]*season|season[.\s_-]*\d{1,2}[.\s_-]*complete|S\d{1,2}[.\s_-]*(?:complete|pack))`)
+	reSeasonInTitle   = regexp.MustCompile(`(?i)(?:^|[^0-9])S(\d{1,2})(?:[^0-9E]|$)`)
+)
+
+func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bool, seriesType string) int {
+	boost := 0
+	if wantPack {
+		if reSeasonPackTitle.MatchString(name) {
+			boost += 50
+		}
+		if m := reSeasonInTitle.FindStringSubmatch(name); len(m) >= 2 {
+			if sn, err := strconv.Atoi(m[1]); err == nil && sn != season {
+				return -200
+			}
+		}
+		if episodeToken := fmt.Sprintf("E%02d", 1); strings.Contains(strings.ToUpper(name), episodeToken) && !reSeasonPackTitle.MatchString(name) {
+			boost -= 20
+		}
+	}
+	if seriesType == "anime" && absolute > 0 {
+		absStr := strconv.Itoa(absolute)
+		if strings.Contains(name, absStr) || strings.Contains(name, fmt.Sprintf("[%d]", absolute)) || strings.Contains(strings.ToUpper(name), fmt.Sprintf("EP%03d", absolute)) {
+			boost += 40
+		}
+	}
+	return boost
 }
 
 func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest) (*automationv1.DispatchResponse, error) {
@@ -767,25 +1188,20 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 }
 
 func (m *Module) AddToQueue(ctx context.Context, req *automationv1.AddToQueueRequest) (*automationv1.AddToQueueResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.db == nil {
 		return nil, fmt.Errorf("not initialized")
 	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	id := fmt.Sprintf("w_%s_%d", req.GetItemType(), time.Now().UnixNano())
-
-	_, err := m.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
-		id, req.GetItemType(), req.GetItemId(), req.GetTmdbId(), req.GetTitle(),
-		req.GetYear(), req.GetSeasonNumber(), req.GetEpisodeNumber(), now, now,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert wanted item: %w", err)
-	}
-
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType:         req.GetItemType(),
+		ItemID:           req.GetItemId(),
+		TmdbID:           req.GetTmdbId(),
+		Title:            req.GetTitle(),
+		Year:             req.GetYear(),
+		SeasonNumber:     req.GetSeasonNumber(),
+		EpisodeNumber:    req.GetEpisodeNumber(),
+		QualityProfileID: req.GetQualityProfileId(),
+	})
+	id := fmt.Sprintf("w_%s_%s", req.GetItemType(), req.GetItemId())
 	return &automationv1.AddToQueueResponse{QueueId: id}, nil
 }
 
@@ -806,7 +1222,7 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 	}
 	offset := (page - 1) * pageSize
 
-	query := `SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, last_searched, created_at, updated_at FROM wanted_items`
+	query := `SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, last_searched, created_at, updated_at, quality_profile_id FROM wanted_items`
 	countQuery := `SELECT COUNT(*) FROM wanted_items`
 	var args []any
 	var where []string
@@ -834,11 +1250,11 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 
 	var items []*automationv1.QueueItem
 	for rows.Next() {
-		var id, itemType, itemID, title, createdAt, updatedAt string
+		var id, itemType, itemID, title, createdAt, updatedAt, profileID string
 		var tmdbID, year, seasonNum, epNum int64
 		var monitored, missing int
 		var lastSearched sql.NullString
-		if err := rows.Scan(&id, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum, &monitored, &missing, &lastSearched, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum, &monitored, &missing, &lastSearched, &createdAt, &updatedAt, &profileID); err != nil {
 			slog.Error("scan queue row", "error", err)
 			continue
 		}
@@ -849,6 +1265,7 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 			Monitored: monitored != 0, Missing: missing != 0,
 			LastSearched: lastSearched.String,
 			CreatedAt:    createdAt, UpdatedAt: updatedAt,
+			QualityProfileId: profileID,
 		})
 	}
 
