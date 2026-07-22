@@ -11,8 +11,8 @@
 
 ## v0.2.0 (Planned)
 
-- [ ] Library module integration — auto-populate queue from media-movies/media-tvshows
-- [ ] Event subscription — react to `media.*` and `download.*` events
+- [x] Library module integration — auto-populate queue from media-movies/media-tvshows
+- [x] Event subscription — react to `media.*` library add/remove/file events (wanted cache sync)
 - [ ] Upgrade logic — pick better quality when available
 - [ ] Delay profiles — wait for better releases
 - [ ] Custom format definitions
@@ -22,3 +22,4 @@
 - [ ] Release profile groups
 - [ ] Automatic import on download completion
 - [ ] Integration with media-scanner
+- [x] Season-pack and anime absolute indexer search
