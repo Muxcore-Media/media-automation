@@ -146,6 +146,7 @@ func (m *Module) Init(ctx context.Context) error {
 		`ALTER TABLE wanted_items ADD COLUMN absolute_number INTEGER DEFAULT 0`,
 		`ALTER TABLE wanted_items ADD COLUMN series_type TEXT DEFAULT ''`,
 		`ALTER TABLE wanted_items ADD COLUMN series_id TEXT DEFAULT ''`,
+		`ALTER TABLE wanted_items ADD COLUMN clean_titles TEXT DEFAULT '[]'`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -516,6 +517,7 @@ type wantedEntry struct {
 	SeriesType       string
 	SeriesID         string
 	QualityProfileID string
+	CleanTitles      []string
 }
 
 func (m *Module) syncWantedFromLibraries(ctx context.Context) {
@@ -686,16 +688,27 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 }
 
 func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
+	if e.ItemID == "" {
+		return
+	}
+	if len(e.CleanTitles) == 0 {
+		sid := e.SeriesID
+		if e.ItemType == "movie" {
+			sid = ""
+		}
+		e.CleanTitles = m.fetchCleanTitles(ctx, e.ItemType, e.ItemID, sid, e.Title)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.db == nil || e.ItemID == "" {
+	if m.db == nil {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	id := fmt.Sprintf("w_%s_%s", e.ItemType, e.ItemID)
+	cleanJSON := encodeCleanTitles(e.CleanTitles)
 	_, err := m.db.ExecContext(ctx,
-		`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, quality_profile_id, absolute_number, series_type, series_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, quality_profile_id, absolute_number, series_type, series_id, clean_titles, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(item_type, item_id) DO UPDATE SET
 		   tmdb_id = excluded.tmdb_id,
 		   title = excluded.title,
@@ -708,10 +721,11 @@ func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
 		   absolute_number = excluded.absolute_number,
 		   series_type = excluded.series_type,
 		   series_id = excluded.series_id,
+		   clean_titles = excluded.clean_titles,
 		   updated_at = excluded.updated_at`,
 		id, e.ItemType, e.ItemID, e.TmdbID, e.Title, e.Year,
 		e.SeasonNumber, e.EpisodeNumber, e.QualityProfileID,
-		e.AbsoluteNumber, e.SeriesType, e.SeriesID, now, now,
+		e.AbsoluteNumber, e.SeriesType, e.SeriesID, cleanJSON, now, now,
 	)
 	if err != nil {
 		slog.Debug("upsert wanted", "error", err, "item", e.ItemID)
@@ -756,7 +770,7 @@ func (m *Module) searchQueuedItems() {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, item_type, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type FROM wanted_items WHERE monitored = 1 AND missing = 1`)
+	rows, err := db.Query(`SELECT id, item_type, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(clean_titles, '[]') FROM wanted_items WHERE monitored = 1 AND missing = 1`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
@@ -764,18 +778,18 @@ func (m *Module) searchQueuedItems() {
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, itemType, title, profileID, seriesType string
+		var id, itemType, title, profileID, seriesType, cleanRaw string
 		var tmdbID, year, seasonNum, epNum, absNum int64
-		if err := rows.Scan(&id, &itemType, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType); err != nil {
+		if err := rows.Scan(&id, &itemType, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType, &cleanRaw); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
-		m.searchAndStore(context.Background(), id, itemType, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID)
+		m.searchAndStore(context.Background(), id, itemType, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID, decodeCleanTitles(cleanRaw))
 	}
 }
 
-func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string) {
-	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID)
+func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string, cleanTitles []string) {
+	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID, cleanTitles)
 	if len(results) > 0 {
 		best := results[0]
 		slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score)
@@ -831,7 +845,10 @@ type scoredRelease struct {
 	Score            int
 }
 
-func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title, profileID string) []scoredRelease {
+func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string) []scoredRelease {
+	if len(cleanTitles) == 0 && title != "" {
+		cleanTitles = []string{cleanMatchTitle(title)}
+	}
 	var scored []scoredRelease
 	if err := m.ensureFormats(ctx); err == nil {
 		m.mu.RLock()
@@ -839,6 +856,9 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		m.mu.RUnlock()
 		minScore := m.profileMinScore(ctx, profileID)
 		for _, r := range results {
+			if !releaseMatchesTitles(r.GetTitle(), cleanTitles) {
+				continue
+			}
 			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
 				Title:     r.GetTitle(),
 				Size:      r.GetSize(),
@@ -868,7 +888,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		}
 	}
 	if len(scored) == 0 {
-		return scoreReleases(results, title)
+		return scoreReleases(results, title, cleanTitles)
 	}
 	sortScoredDesc(scored)
 	if len(scored) > 100 {
@@ -916,10 +936,13 @@ func filterByMinScore(scored []scoredRelease, minScore int) []scoredRelease {
 	return out
 }
 
-func scoreReleases(results []*indexerv1.SearchResult, title string) []scoredRelease {
+func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles []string) []scoredRelease {
+	if len(cleanTitles) == 0 && title != "" {
+		cleanTitles = []string{cleanMatchTitle(title)}
+	}
 	var scored []scoredRelease
 	for _, r := range results {
-		s := scoreRelease(r, title)
+		s := scoreRelease(r, cleanTitles)
 		if s > 0 {
 			scored = append(scored, scoredRelease{
 				GUID:             r.GetGuid(),
@@ -944,9 +967,12 @@ func scoreReleases(results []*indexerv1.SearchResult, title string) []scoredRele
 	return scored
 }
 
-func scoreRelease(r *indexerv1.SearchResult, title string) int {
-	score := 0
+func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string) int {
 	name := r.GetTitle()
+	if !releaseMatchesTitles(name, cleanTitles) {
+		return 0
+	}
+	score := 0
 
 	resolution := parseResolution(name)
 	switch {
@@ -1035,7 +1061,8 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	}
 
 	results := m.searchWithIndexer(ctx, req.GetItemType(), req.GetQuery(),
-		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()), 0, "", int(req.GetLimit()), req.GetQualityProfileId())
+		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()), 0, "", int(req.GetLimit()), req.GetQualityProfileId(),
+		[]string{cleanMatchTitle(req.GetQuery())})
 
 	var matches []*automationv1.ReleaseMatch
 	for _, r := range results {
@@ -1057,7 +1084,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	return &automationv1.SearchItemResponse{Matches: matches}, nil
 }
 
-func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType string, limit int, profileID string) []scoredRelease {
+func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType string, limit int, profileID string, cleanTitles []string) []scoredRelease {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -1107,7 +1134,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		return nil
 	}
 
-	scored := m.scoreWithFormatsFallback(ctx, resp.GetResults(), query, profileID)
+	scored := m.scoreWithFormatsFallback(ctx, resp.GetResults(), query, cleanTitles, profileID)
 	if wantPack || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
@@ -1178,13 +1205,44 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
 		now, now,
 	)
+	var seriesID string
+	if req.GetItemType() == "tv" && req.GetItemId() != "" {
+		_ = m.db.QueryRowContext(ctx,
+			`SELECT COALESCE(series_id, '') FROM wanted_items WHERE item_type = ? AND item_id = ? LIMIT 1`,
+			req.GetItemType(), req.GetItemId(),
+		).Scan(&seriesID)
+	}
 	m.mu.Unlock()
+
+	payload, _ := json.Marshal(contracts.DownloadDispatchedPayload{
+		Title:            req.GetTitle(),
+		DownloadProtocol: req.GetDownloadProtocol(),
+		Score:            req.GetScore(),
+		ItemType:         req.GetItemType(),
+		ItemID:           req.GetItemId(),
+		TMDBID:           req.GetTmdbId(),
+		GUID:             req.GetGuid(),
+		Indexer:          req.GetIndexerName(),
+		Size:             req.GetSize(),
+		DownloadID:       addResp.GetId(),
+		SeriesID:         seriesID,
+	})
+	m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
 
 	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", req.GetDownloadProtocol(), "id", addResp.GetId())
 	return &automationv1.DispatchResponse{
 		DownloadId: addResp.GetId(),
 		Status:     "sent",
 	}, nil
+}
+
+func (m *Module) publishEvent(ctx context.Context, eventType string, payload []byte) {
+	if m.mc == nil {
+		return
+	}
+	if err := m.mc.Events.Publish(ctx, eventType, m.id, payload); err != nil {
+		slog.Warn("publish event failed", "type", eventType, "error", err)
+	}
 }
 
 func (m *Module) AddToQueue(ctx context.Context, req *automationv1.AddToQueueRequest) (*automationv1.AddToQueueResponse, error) {

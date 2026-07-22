@@ -231,6 +231,11 @@ func TestDispatchNoDownloader(t *testing.T) {
 	}
 }
 
+func TestPublishEventNilClient(t *testing.T) {
+	m := newTestModule(t)
+	m.publishEvent(context.Background(), "media.download.dispatched", []byte(`{"title":"x"}`))
+}
+
 func TestHealth(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
@@ -375,7 +380,7 @@ func TestSearchAndStoreDoesNotClearMissing(t *testing.T) {
 	m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'mv1'`).Scan(&id)
 	m.mu.RUnlock()
 
-	m.searchAndStore(ctx, id, "movie", "A", 1, 2000, 0, 0, 0, "", "")
+	m.searchAndStore(ctx, id, "movie", "A", 1, 2000, 0, 0, 0, "", "", []string{cleanMatchTitle("A")})
 
 	queue, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
 	if err != nil {
