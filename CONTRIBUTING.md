@@ -3,7 +3,7 @@
 ## Development Setup
 
 1. Go 1.26+
-2. Clone core, searcher-module, http-downloader, and this module as siblings
+2. Clone `core`, `contracts-indexer`, `contracts-downloader`, `media-custom-formats`, `media-scanner`, `media-movies`, `media-tvshows`, and this module as siblings (see `go.mod` `replace` directives)
 3. `make test` — run unit tests
 4. `make lint` — golangci-lint
 5. `make proto` — regenerate protobuf (requires protoc + plugins)

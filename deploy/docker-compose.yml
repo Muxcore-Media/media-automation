@@ -21,7 +21,7 @@ services:
       - "9460"
     environment:
       MUXCORE_GRPC_ADDR: core:9090
-      MUXCORE_GRPC_INSECURE: "true"
+      MUXCORE_INSECURE_DISABLE_TLS: "true"
       MUXCORE_LOG_LEVEL: debug
       MUXCORE_MODULE_ID: media-automation
     volumes:

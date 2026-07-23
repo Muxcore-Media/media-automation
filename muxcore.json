@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "author": "MuxCore",
   "roles": ["automation"],
-  "capabilities": ["media.automation"],
+  "capabilities": ["media.automation", "settings"],
   "contracts": [],
   "minCoreVersion": "0.4.0"
 }

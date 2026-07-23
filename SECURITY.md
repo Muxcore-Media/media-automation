@@ -14,7 +14,7 @@ Pre-1.0 beta software. APIs and interfaces are not yet stable.
 ## Reporting a Vulnerability
 
 **Do not open a public issue.** Report via GitHub Security Advisories:
-https://github.com/yourorg/your-module/security/advisories
+https://github.com/Muxcore-Media/media-automation/security/advisories
 
 Acknowledgment within **72 hours**. Target patch: **7 days** critical, **30 days** moderate.
 
