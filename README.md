@@ -4,34 +4,44 @@
 [![Go Version](https://img.shields.io/badge/Go-1.26-blue)](https://go.dev/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
-**Automation engine for MuxCore — searches searchers, scores releases, and dispatches downloads for wanted media.**
+**Automation engine for MuxCore — searches indexers, scores releases, and dispatches downloads for wanted media.**
 
-A MuxCore sidecar module that bridges the gap between library management and downloading. It monitors wanted items, searches searchers, scores results by quality, and sends the best match to a downloader.
+A MuxCore sidecar module that bridges the gap between library management and downloading. It monitors wanted items, searches indexer modules, scores results by quality, and sends the best match to a downloader.
 
 ---
 
 ## How It Works
 
 ```
-Admin UI ──→ media-automation ──→ searcher-module (search)
-                │
-                ├──→ http-downloader (dispatch)
+Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
+                │                      ├── site module A
+                │                      ├── site module B
+                │                      └── aggregator (optional)
+                ├──→ downloader (dispatch)
                 │
                 └──→ SQLite (queue + history)
 ```
 
 ### Key Features
 
-- **Quality scoring** — ranks releases by resolution (2160p > 1080p > 720p), format (Remux > BluRay > WEB-DL > HDTV), seeders, and size sanity
-- **Search integration** — discovers and queries searcher-module via gRPC
-- **Download dispatch** — sends selected releases to http-downloader
+- **Quality scoring** — prefers `media-custom-formats` `ScoreRelease` when available; falls back to local ranking by resolution (2160p > 1080p > 720p), format (Remux > BluRay > WEB-DL > HDTV), seeders, and size sanity
+- **Upgrade / cutoff / delay** — after import, keeps wanted items below profile cutoff when upgrades are allowed; re-searches and grabs only strictly better scores after `upgrade_delay_minutes`
+- **Protocol delay profiles** — waits before grab using seeded `delay_profiles` (default: torrent 15m, usenet 0)
+- **Multi-indexer search** — discovers **all** modules advertising capability `indexer`, searches them in parallel, merges results, dedupes by GUID (or download URL), then scores and limits
+- **Download dispatch** — sends selected releases to a downloader module
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
-- **Periodic RSS sync** — automatically searches for wanted items every 15 minutes
+- **Periodic RSS sync** — automatically searches for wanted items on an interval (default 15 minutes; mesh setting `rss_sync_minutes`)
+- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`
 - **Download history** — tracks all dispatched downloads with status
+- **Import on complete** — on `download.completed`, asks media-scanner to `ImportPath` the torrent save path and marks history complete (or `import_failed`); `download.failed` marks history failed. On `media.*.file_added`, marks the wanted item owned (or removes it at cutoff / when upgrades disabled).
 
 ---
 
 ## Configuration
+
+### Ops note: scanner watch directory
+
+For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or whatever path torrents finish in) as a **media-scanner watch directory**. `ImportPath` only accepts paths under a registered watch dir; otherwise the history row is marked `import_failed`.
 
 ### CLI Flags
 
@@ -47,7 +57,8 @@ Admin UI ──→ media-automation ──→ searcher-module (search)
 | `AUTOMATION_DB_PATH` | `/var/lib/media-automation/automation.db` | SQLite database path |
 | `AUTOMATION_GRPC_ADDR` | `:9460` | gRPC listen address |
 | `MUXCORE_GRPC_ADDR` | `localhost:9090` | Core mesh gRPC address |
-| `MUXCORE_GRPC_INSECURE` | `false` | Disable TLS for dev |
+| `MUXCORE_MODULE_ID` | `media-automation` | Module identity (overrides `--muxcore-module-id`) |
+| `MUXCORE_INSECURE_DISABLE_TLS` | `false` | Disable TLS for dev |
 
 ---
 
@@ -58,7 +69,7 @@ Admin UI ──→ media-automation ──→ searcher-module (search)
 make build
 
 # Run against local core (dev mode)
-export MUXCORE_GRPC_INSECURE=true
+export MUXCORE_INSECURE_DISABLE_TLS=true
 ./media-automation --muxcore-mesh-addr localhost:9090
 ```
 
@@ -67,7 +78,7 @@ export MUXCORE_GRPC_INSECURE=true
 ## gRPC API
 
 ### `SearchItem`
-Score-based search across all configured searchers.
+Score-based search across all discovered indexer modules (parallel fan-out, merge, dedupe).
 
 ```json
 {

@@ -129,4 +129,5 @@ message DownloadRecord {
   string sent_at = 11;
   string completed_at = 12;
   string created_at = 13;
+  string download_id = 14;
 }

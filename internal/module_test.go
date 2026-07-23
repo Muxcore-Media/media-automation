@@ -231,6 +231,50 @@ func TestDispatchNoDownloader(t *testing.T) {
 	}
 }
 
+func TestDownloadHistoryStoresDownloadID(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	const downloaderID = "torrent-abc-123"
+
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx,
+		`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
+		"dl_test_1", "item-1", "guid-1", "Test Title", "indexer",
+		int64(100), int64(90), "magnet:?xt=urn:btih:test", "torrent",
+		now, now, downloaderID,
+	)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatalf("insert history: %v", err)
+	}
+
+	hist, err := m.GetHistory(ctx, &autov1.GetHistoryRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hist.Total != 1 {
+		t.Fatalf("expected 1 history entry, got %d", hist.Total)
+	}
+	if hist.Records[0].DownloadId != downloaderID {
+		t.Errorf("download_id: got %q, want %q", hist.Records[0].DownloadId, downloaderID)
+	}
+
+	var lookedUp string
+	m.mu.RLock()
+	err = m.db.QueryRowContext(ctx,
+		`SELECT id FROM download_history WHERE download_id = ?`, downloaderID,
+	).Scan(&lookedUp)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatalf("lookup by download_id: %v", err)
+	}
+	if lookedUp != "dl_test_1" {
+		t.Errorf("lookup id: got %q, want dl_test_1", lookedUp)
+	}
+}
+
 func TestPublishEventNilClient(t *testing.T) {
 	m := newTestModule(t)
 	m.publishEvent(context.Background(), "media.download.dispatched", []byte(`{"title":"x"}`))
@@ -380,7 +424,7 @@ func TestSearchAndStoreDoesNotClearMissing(t *testing.T) {
 	m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'mv1'`).Scan(&id)
 	m.mu.RUnlock()
 
-	m.searchAndStore(ctx, id, "movie", "A", 1, 2000, 0, 0, 0, "", "", []string{cleanMatchTitle("A")})
+	m.searchAndStore(ctx, id, "movie", "mv1", "A", 1, 2000, 0, 0, 0, "", "", []string{cleanMatchTitle("A")}, true, 0, "")
 
 	queue, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
 	if err != nil {
@@ -419,6 +463,108 @@ func TestSeasonPackEligible(t *testing.T) {
 	}
 	if !seasonPackEligible(3) {
 		t.Fatal("3 missing should prefer pack")
+	}
+}
+
+func TestDecideGrab(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	base := profileDecision{MinScore: 50, CutoffScore: 200, UpgradeAllowed: true, UpgradeDelayMinutes: 60}
+
+	if !decideGrab(base, true, 0, 80, time.Time{}, now) {
+		t.Fatal("missing above min should grab")
+	}
+	if decideGrab(base, true, 0, 40, time.Time{}, now) {
+		t.Fatal("missing below min should not grab")
+	}
+	if decideGrab(base, false, 100, 150, now.Add(-30*time.Minute), now) {
+		t.Fatal("upgrade within delay should not grab")
+	}
+	if !decideGrab(base, false, 100, 150, now.Add(-2*time.Hour), now) {
+		t.Fatal("upgrade after delay and better score should grab")
+	}
+	if decideGrab(base, false, 100, 100, now.Add(-2*time.Hour), now) {
+		t.Fatal("equal score should not upgrade")
+	}
+	if decideGrab(base, false, 200, 300, now.Add(-2*time.Hour), now) {
+		t.Fatal("at cutoff should not upgrade")
+	}
+	noUp := base
+	noUp.UpgradeAllowed = false
+	if decideGrab(noUp, false, 50, 150, now.Add(-2*time.Hour), now) {
+		t.Fatal("upgrade_allowed=false should not grab")
+	}
+	noCutoff := profileDecision{MinScore: 0, CutoffScore: 0, UpgradeAllowed: true, UpgradeDelayMinutes: 0}
+	if !decideGrab(noCutoff, false, 50, 51, now, now) {
+		t.Fatal("no cutoff/delay should upgrade when better")
+	}
+}
+
+func TestShouldKeepForUpgrade(t *testing.T) {
+	p := profileDecision{UpgradeAllowed: true, CutoffScore: 200}
+	if !shouldKeepForUpgrade(p, 100) {
+		t.Fatal("below cutoff should keep")
+	}
+	if shouldKeepForUpgrade(p, 200) {
+		t.Fatal("at cutoff should not keep")
+	}
+	p.UpgradeAllowed = false
+	if shouldKeepForUpgrade(p, 50) {
+		t.Fatal("upgrade disallowed should not keep")
+	}
+	p.UpgradeAllowed = true
+	p.CutoffScore = 0
+	if !shouldKeepForUpgrade(p, 999) {
+		t.Fatal("cutoff 0 means no ceiling")
+	}
+}
+
+func TestOnFileAddedKeepsUpgradeCandidate(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "movie", ItemID: "mv_up", TmdbID: 1, Title: "Upgradable",
+		QualityProfileID: "",
+	})
+	m.mu.Lock()
+	m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+		VALUES ('dl1', 'mv_up', 'g1', 'Upgradable.1080p', '', 0, 100, '', '', 'completed', datetime('now'), datetime('now'), 'd1')`)
+	m.mu.Unlock()
+
+	m.onFileAdded(ctx, "movie", "mv_up", "/data/Upgradable.1080p.mkv", "1080p")
+
+	var missing, score int
+	var acquired string
+	m.mu.RLock()
+	err := m.db.QueryRow(`SELECT missing, current_score, file_acquired_at FROM wanted_items WHERE item_id = 'mv_up'`).Scan(&missing, &score, &acquired)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatalf("wanted row gone: %v", err)
+	}
+	if missing != 0 {
+		t.Errorf("expected missing=0, got %d", missing)
+	}
+	if score != 100 {
+		t.Errorf("expected current_score=100 from history, got %d", score)
+	}
+	if acquired == "" {
+		t.Error("expected file_acquired_at set")
+	}
+}
+
+func TestHasInFlightDownload(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{ItemType: "movie", ItemID: "mv_fly", TmdbID: 3, Title: "Fly"})
+	if m.hasInFlightDownload(ctx, "mv_fly") {
+		t.Fatal("expected no in-flight")
+	}
+	m.mu.Lock()
+	m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, score, status, created_at)
+		VALUES ('dl3', 'mv_fly', 'g3', 'x', 10, 'sent', datetime('now'))`)
+	m.mu.Unlock()
+	if !m.hasInFlightDownload(ctx, "mv_fly") {
+		t.Fatal("expected in-flight")
 	}
 }
 
