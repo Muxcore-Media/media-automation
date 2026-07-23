@@ -8,7 +8,7 @@
 
 ## Contracts
 
-None defined — this module provides its own gRPC API and depends on indexer (searcher-module) and downloader (http-downloader) modules.
+None defined — this module provides its own gRPC API and depends on modules advertising `indexer` (one or many) and `downloader`. Soft dependencies: `media-custom-formats` (scoring / quality profiles), `media-scanner` (`ImportPath` on download complete), `media-movies` / `media-tvshows` (wanted sync).
 
 ## Breaking Changes
 

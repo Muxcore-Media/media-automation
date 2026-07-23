@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,10 +21,11 @@ import (
 
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 
+	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
-	downloaderv1 "github.com/Muxcore-Media/downloader-native-torrent/proto/downloaderv1"
 	formatsv1 "github.com/Muxcore-Media/media-custom-formats/proto/formatsv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
+	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
@@ -45,16 +47,27 @@ type Module struct {
 	grpcSrv  *grpc.Server
 	grpcLis  net.Listener
 
-	indexerConn      *grpc.ClientConn
-	indexerClient    indexerv1.IndexerServiceClient
+	enableAutomaticSearch   bool
+	enableAutomaticUpgrades bool
+	rssSyncMinutes          int
+
+	indexerConns   map[string]*grpc.ClientConn
+	indexerClients map[string]indexerv1.IndexerServiceClient
+	// testIndexerClients, when set, skips discovery and is used for Search fan-out (tests).
+	testIndexerClients map[string]indexerv1.IndexerServiceClient
+
 	downloaderConn   *grpc.ClientConn
-	downloaderClient downloaderv1.TorrentServiceClient
+	downloaderClient cdlv1.DownloaderServiceClient
 	formatsConn      *grpc.ClientConn
 	formatsClient    formatsv1.FormatServiceClient
 	moviesConn       *grpc.ClientConn
 	moviesClient     mgmntv1.MovieManagementServiceClient
 	tvConn           *grpc.ClientConn
 	tvClient         tvmgmtv1.TvManagementServiceClient
+	scannerConn      *grpc.ClientConn
+	scannerClient    scannerv1.ScannerServiceClient
+	// testScannerClient, when set, skips discovery and is used for ImportPath (tests).
+	testScannerClient scannerv1.ScannerServiceClient
 }
 
 type Config struct {
@@ -80,9 +93,14 @@ func NewModule(cfg Config) *Module {
 		cfg.GRPCAddr = v
 	}
 	return &Module{
-		id:       cfg.ID,
-		dbPath:   cfg.DBPath,
-		grpcAddr: cfg.GRPCAddr,
+		id:                      cfg.ID,
+		dbPath:                  cfg.DBPath,
+		grpcAddr:                cfg.GRPCAddr,
+		enableAutomaticSearch:   true,
+		enableAutomaticUpgrades: true,
+		rssSyncMinutes:          15,
+		indexerConns:            make(map[string]*grpc.ClientConn),
+		indexerClients:          make(map[string]indexerv1.IndexerServiceClient),
 	}
 }
 
@@ -94,7 +112,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
-		Capabilities:   []string{"media.automation"},
+		Capabilities:   []string{"media.automation", "settings"},
 		MinCoreVersion: "0.4.0",
 		HTTPAddr:       m.grpcAddr,
 	}
@@ -147,6 +165,8 @@ func (m *Module) Init(ctx context.Context) error {
 		`ALTER TABLE wanted_items ADD COLUMN series_type TEXT DEFAULT ''`,
 		`ALTER TABLE wanted_items ADD COLUMN series_id TEXT DEFAULT ''`,
 		`ALTER TABLE wanted_items ADD COLUMN clean_titles TEXT DEFAULT '[]'`,
+		`ALTER TABLE wanted_items ADD COLUMN current_score INTEGER DEFAULT 0`,
+		`ALTER TABLE wanted_items ADD COLUMN file_acquired_at TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			db.Close()
@@ -167,17 +187,36 @@ func (m *Module) Init(ctx context.Context) error {
 			status          TEXT DEFAULT 'pending',
 			sent_at         TEXT,
 			completed_at    TEXT,
-			created_at      TEXT NOT NULL
+			created_at      TEXT NOT NULL,
+			download_id     TEXT DEFAULT ''
 		)
 	`); err != nil {
 		db.Close()
 		return fmt.Errorf("create download_history table: %w", err)
+	}
+	if err := m.migrateDelayTables(ctx, db); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate delay tables: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE download_history ADD COLUMN download_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return fmt.Errorf("migrate download_history: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_download_history_download_id ON download_history(download_id)
+	`); err != nil {
+		db.Close()
+		return fmt.Errorf("create download_history download_id index: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_wanted_type ON wanted_items(item_type, missing)
 	`); err != nil {
 		db.Close()
 		return fmt.Errorf("create wanted index: %w", err)
+	}
+	if err := m.migrateDelayTables(ctx, db); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate delay tables: %w", err)
 	}
 
 	m.mu.Lock()
@@ -201,6 +240,7 @@ func (m *Module) Init(ctx context.Context) error {
 func (m *Module) Start(ctx context.Context) error {
 	m.grpcSrv = grpc.NewServer()
 	automationv1.RegisterAutomationServiceServer(m.grpcSrv, m)
+	m.registerSettingsMesh(m.grpcSrv)
 
 	go func() {
 		slog.Info("media-automation gRPC service started", "addr", m.grpcAddr)
@@ -222,9 +262,13 @@ func (m *Module) Stop(ctx context.Context) error {
 	if m.mc != nil {
 		m.mc.Close()
 	}
-	if m.indexerConn != nil {
-		m.indexerConn.Close()
+	m.mu.Lock()
+	for id, conn := range m.indexerConns {
+		conn.Close()
+		delete(m.indexerConns, id)
+		delete(m.indexerClients, id)
 	}
+	m.mu.Unlock()
 	if m.downloaderConn != nil {
 		m.downloaderConn.Close()
 	}
@@ -236,6 +280,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.tvConn != nil {
 		m.tvConn.Close()
+	}
+	if m.scannerConn != nil {
+		m.scannerConn.Close()
 	}
 	m.mu.Lock()
 	if m.db != nil {
@@ -264,7 +311,7 @@ func (m *Module) dialCore(ctx context.Context) {
 	if meshAddr == "" {
 		meshAddr = "localhost:9090"
 	}
-	insecureMode := os.Getenv("MUXCORE_GRPC_INSECURE") == "true"
+	insecureMode := os.Getenv("MUXCORE_INSECURE_DISABLE_TLS") == "true" || os.Getenv("MUXCORE_GRPC_INSECURE") == "true"
 
 	var opts []client.Option
 	if insecureMode {
@@ -290,35 +337,93 @@ func (m *Module) findModuleByCapability(ctx context.Context, cap string) (string
 	}
 	for _, mod := range modules {
 		if mod.HttpAddr != "" {
-			return mod.HttpAddr, nil
+			return dialAddrForModule(mod.GetId(), mod.GetHttpAddr()), nil
 		}
 	}
 	return "", fmt.Errorf("no %s module found", cap)
 }
 
+// dialAddrForModule rewrites host to module ID when HttpAddr has a port,
+// matching Docker/mesh DNS reachability used by request-media.
+func dialAddrForModule(moduleID, httpAddr string) string {
+	if httpAddr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(httpAddr)
+	if err == nil && port != "" && moduleID != "" {
+		return moduleID + ":" + port
+	}
+	return httpAddr
+}
+
 // ── Module connections ─────────────────────────────────────────
 
-func (m *Module) ensureIndexer(ctx context.Context) error {
-	m.mu.RLock()
-	if m.indexerClient != nil {
-		m.mu.RUnlock()
-		return nil
+// syncIndexers rediscovers all modules with capability "indexer", dials any
+// missing ones, and closes connections for modules that disappeared.
+// Returns the current client set (module ID → client).
+func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.IndexerServiceClient, error) {
+	if m.testIndexerClients != nil {
+		return m.testIndexerClients, nil
 	}
-	m.mu.RUnlock()
+	if m.mc == nil {
+		return nil, fmt.Errorf("not connected to core")
+	}
+	modules, err := m.mc.Discovery.FindByCapability(ctx, "indexer")
+	if err != nil {
+		return nil, fmt.Errorf("discover indexer: %w", err)
+	}
 
-	addr, err := m.findModuleByCapability(ctx, "indexer")
-	if err != nil {
-		return err
+	wanted := make(map[string]string, len(modules)) // id → dial addr
+	for _, mod := range modules {
+		if mod.GetHttpAddr() == "" || mod.GetId() == "" {
+			continue
+		}
+		wanted[mod.GetId()] = dialAddrForModule(mod.GetId(), mod.GetHttpAddr())
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial indexer: %w", err)
+	if len(wanted) == 0 {
+		return nil, fmt.Errorf("no indexer module found")
 	}
+
 	m.mu.Lock()
-	m.indexerConn = conn
-	m.indexerClient = indexerv1.NewIndexerServiceClient(conn)
-	m.mu.Unlock()
-	return nil
+	defer m.mu.Unlock()
+
+	if m.indexerConns == nil {
+		m.indexerConns = make(map[string]*grpc.ClientConn)
+	}
+	if m.indexerClients == nil {
+		m.indexerClients = make(map[string]indexerv1.IndexerServiceClient)
+	}
+
+	for id, conn := range m.indexerConns {
+		if _, ok := wanted[id]; !ok {
+			conn.Close()
+			delete(m.indexerConns, id)
+			delete(m.indexerClients, id)
+		}
+	}
+
+	for id, addr := range wanted {
+		if _, ok := m.indexerClients[id]; ok {
+			continue
+		}
+		conn, dialErr := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if dialErr != nil {
+			slog.Warn("dial indexer failed", "module", id, "addr", addr, "error", dialErr)
+			continue
+		}
+		m.indexerConns[id] = conn
+		m.indexerClients[id] = indexerv1.NewIndexerServiceClient(conn)
+	}
+
+	if len(m.indexerClients) == 0 {
+		return nil, fmt.Errorf("no indexer module reachable")
+	}
+
+	out := make(map[string]indexerv1.IndexerServiceClient, len(m.indexerClients))
+	for id, c := range m.indexerClients {
+		out[id] = c
+	}
+	return out, nil
 }
 
 func (m *Module) ensureDownloader(ctx context.Context) error {
@@ -339,7 +444,7 @@ func (m *Module) ensureDownloader(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	m.downloaderConn = conn
-	m.downloaderClient = downloaderv1.NewTorrentServiceClient(conn)
+	m.downloaderClient = cdlv1.NewDownloaderServiceClient(conn)
 	m.mu.Unlock()
 	return nil
 }
@@ -413,6 +518,38 @@ func (m *Module) ensureTV(ctx context.Context) error {
 	return nil
 }
 
+func (m *Module) ensureScanner(ctx context.Context) error {
+	m.mu.RLock()
+	if m.testScannerClient != nil || m.scannerClient != nil {
+		m.mu.RUnlock()
+		return nil
+	}
+	m.mu.RUnlock()
+
+	addr, err := m.findModuleByCapability(ctx, "media.scanner")
+	if err != nil {
+		return err
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("dial scanner: %w", err)
+	}
+	m.mu.Lock()
+	m.scannerConn = conn
+	m.scannerClient = scannerv1.NewScannerServiceClient(conn)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Module) getScannerClient() scannerv1.ScannerServiceClient {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.testScannerClient != nil {
+		return m.testScannerClient
+	}
+	return m.scannerClient
+}
+
 // ── Event Subscriptions ─────────────────────────────────────────
 
 func (m *Module) subscribeToMediaEvents() {
@@ -430,6 +567,8 @@ func (m *Module) subscribeToMediaEvents() {
 		contracts.EventMovieFileAdded,
 		contracts.EventTVEpisodeFileAdded,
 		contracts.EventFileImported,
+		contracts.EventDownloadCompleted,
+		contracts.EventDownloadFailed,
 	}
 
 	for _, et := range eventTypes {
@@ -472,21 +611,114 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 		case contracts.EventMovieFileAdded:
 			var payload contracts.MovieFileAddedPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.MovieID != "" {
-				m.removeWanted(context.Background(), "movie", payload.MovieID)
+				m.onFileAdded(context.Background(), "movie", payload.MovieID, payload.FilePath, payload.Quality)
 			}
 		case contracts.EventTVEpisodeFileAdded:
 			var payload contracts.TVEpisodeFileAddedPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.EpisodeID != "" {
-				m.removeWanted(context.Background(), "tv", payload.EpisodeID)
+				m.onFileAdded(context.Background(), "tv", payload.EpisodeID, payload.FilePath, payload.Quality)
 			}
 		case contracts.EventFileImported:
 			var payload contracts.FileImportedPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.OriginalPath != "" {
 				slog.Info("file imported event received", "title", payload.Title, "path", payload.DestinationPath)
 			}
+		case contracts.EventDownloadCompleted, contracts.EventDownloadFailed:
+			var payload contracts.DownloadEventPayload
+			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+				slog.Warn("download event unmarshal", "type", eventType, "error", err)
+				continue
+			}
+			m.handleDownloadLifecycleEvent(context.Background(), eventType, payload)
 		}
 	}
 	cancel()
+}
+
+// handleDownloadLifecycleEvent correlates download.completed / download.failed with
+// download_history by download_id, triggers scanner ImportPath on success, and updates status.
+// Owned-state updates stay on the media.file_added path — do not clear wanted here.
+func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType string, payload contracts.DownloadEventPayload) {
+	if payload.ID == "" {
+		slog.Debug("download event missing id", "type", eventType)
+		return
+	}
+
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return
+	}
+
+	var histID string
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM download_history WHERE download_id = ?`, payload.ID,
+	).Scan(&histID)
+	if err == sql.ErrNoRows {
+		slog.Debug("download event for unknown download_id", "type", eventType, "download_id", payload.ID)
+		return
+	}
+	if err != nil {
+		slog.Warn("lookup download_history", "download_id", payload.ID, "error", err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	if eventType == contracts.EventDownloadFailed {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"failed", now, histID,
+		); err != nil {
+			slog.Warn("mark download failed", "id", histID, "error", err)
+		}
+		return
+	}
+
+	// EventDownloadCompleted
+	if err := m.ensureScanner(ctx); err != nil {
+		slog.Warn("ensure scanner for import", "download_id", payload.ID, "error", err)
+		if _, uerr := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"import_failed", now, histID,
+		); uerr != nil {
+			slog.Warn("mark import_failed", "id", histID, "error", uerr)
+		}
+		return
+	}
+
+	client := m.getScannerClient()
+	if client == nil {
+		slog.Warn("scanner client unavailable", "download_id", payload.ID)
+		if _, uerr := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"import_failed", now, histID,
+		); uerr != nil {
+			slog.Warn("mark import_failed", "id", histID, "error", uerr)
+		}
+		return
+	}
+
+	savePath := payload.SavePath
+	_, err = client.ImportPath(ctx, &scannerv1.ImportPathRequest{Path: savePath})
+	if err != nil {
+		slog.Warn("ImportPath failed", "download_id", payload.ID, "path", savePath, "error", err)
+		if _, uerr := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"import_failed", now, histID,
+		); uerr != nil {
+			slog.Warn("mark import_failed", "id", histID, "error", uerr)
+		}
+		return
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+		"completed", now, histID,
+	); err != nil {
+		slog.Warn("mark download completed", "id", histID, "error", err)
+	}
 }
 
 func (m *Module) syncTVSeriesWithRetry(seriesID string) {
@@ -741,10 +973,104 @@ func (m *Module) removeWanted(ctx context.Context, itemType, itemID string) {
 	m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, itemID)
 }
 
+func (m *Module) onFileAdded(ctx context.Context, itemType, itemID, filePath, quality string) {
+	if itemID == "" {
+		return
+	}
+	var profileID string
+	m.mu.RLock()
+	if m.db != nil {
+		_ = m.db.QueryRowContext(ctx,
+			`SELECT COALESCE(quality_profile_id, '') FROM wanted_items WHERE item_type = ? AND item_id = ?`,
+			itemType, itemID,
+		).Scan(&profileID)
+	}
+	m.mu.RUnlock()
+
+	score := m.resolveOwnedScore(ctx, itemID, filePath, quality, profileID)
+	p := m.loadProfileDecision(ctx, profileID)
+
+	if !shouldKeepForUpgrade(p, score) {
+		m.removeWanted(ctx, itemType, itemID)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE wanted_items SET missing = 0, current_score = ?, file_acquired_at = ?, updated_at = ? WHERE item_type = ? AND item_id = ?`,
+		score, now, now, itemType, itemID,
+	)
+	if err != nil {
+		slog.Debug("mark owned wanted", "error", err, "item", itemID)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return
+	}
+}
+
+func (m *Module) resolveOwnedScore(ctx context.Context, itemID, filePath, quality, profileID string) int {
+	if s := m.scoreFromHistory(ctx, itemID); s > 0 {
+		return s
+	}
+	title := quality
+	if title == "" {
+		title = filepath.Base(filePath)
+	}
+	if title == "" || title == "." {
+		return 0
+	}
+	if err := m.ensureFormats(ctx); err == nil {
+		m.mu.RLock()
+		fc := m.formatsClient
+		m.mu.RUnlock()
+		if fc != nil {
+			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
+				Title:     title,
+				ProfileId: profileID,
+			})
+			if err == nil && resp.GetTotalScore() > 0 {
+				return int(resp.GetTotalScore())
+			}
+		}
+	}
+	return scoreRelease(&indexerv1.SearchResult{Title: title}, nil)
+}
+
+func (m *Module) scoreFromHistory(ctx context.Context, itemID string) int {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil || itemID == "" {
+		return 0
+	}
+	var score int
+	err := db.QueryRowContext(ctx,
+		`SELECT score FROM download_history WHERE wanted_item_id = ? AND status IN ('completed', 'sent', 'import_failed') ORDER BY CASE status WHEN 'completed' THEN 0 WHEN 'sent' THEN 1 ELSE 2 END, created_at DESC LIMIT 1`,
+		itemID,
+	).Scan(&score)
+	if err != nil {
+		return 0
+	}
+	return score
+}
+
 // ── RSS Sync Loop ──────────────────────────────────────────────
 
 func (m *Module) rssSyncLoop() {
-	const interval = 15 * time.Minute
+	m.mu.RLock()
+	mins := m.rssSyncMinutes
+	m.mu.RUnlock()
+	if mins < 1 {
+		mins = 15
+	}
+	interval := time.Duration(mins) * time.Minute
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -752,6 +1078,12 @@ func (m *Module) rssSyncLoop() {
 	m.rssSync()
 
 	for range ticker.C {
+		m.mu.RLock()
+		enabled := m.enableAutomaticSearch
+		m.mu.RUnlock()
+		if !enabled {
+			continue
+		}
 		m.rssSync()
 	}
 }
@@ -770,7 +1102,7 @@ func (m *Module) searchQueuedItems() {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, item_type, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(clean_titles, '[]') FROM wanted_items WHERE monitored = 1 AND missing = 1`)
+	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, '') FROM wanted_items WHERE monitored = 1 AND (missing = 1 OR missing = 0)`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
@@ -778,23 +1110,34 @@ func (m *Module) searchQueuedItems() {
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, itemType, title, profileID, seriesType, cleanRaw string
-		var tmdbID, year, seasonNum, epNum, absNum int64
-		if err := rows.Scan(&id, &itemType, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType, &cleanRaw); err != nil {
+		var id, itemType, itemID, title, profileID, seriesType, cleanRaw, fileAcquiredAt string
+		var tmdbID, year, seasonNum, epNum, absNum, missing, currentScore int64
+		if err := rows.Scan(&id, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType, &cleanRaw, &missing, &currentScore, &fileAcquiredAt); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
-		m.searchAndStore(context.Background(), id, itemType, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID, decodeCleanTitles(cleanRaw))
+		m.searchAndStore(context.Background(), id, itemType, itemID, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID, decodeCleanTitles(cleanRaw), missing != 0, int(currentScore), fileAcquiredAt)
 	}
 }
 
-func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string, cleanTitles []string) {
+func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
+	if m.hasInFlightDownload(ctx, itemID) {
+		slog.Debug("skip search: in-flight download", "item", itemID)
+		m.touchLastSearched(wantedID)
+		return
+	}
+
 	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID, cleanTitles)
 	if len(results) > 0 {
 		best := results[0]
 		slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score)
 
-		if best.DownloadURL != "" {
+		p := m.loadProfileDecision(ctx, profileID)
+		acquired := parseFlexibleTime(fileAcquiredAt)
+		now := time.Now().UTC()
+		if best.DownloadURL != "" &&
+			decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
+			m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, now) {
 			_, err := m.Dispatch(ctx, &automationv1.DispatchRequest{
 				Guid:             best.GUID,
 				Title:            best.Title,
@@ -813,9 +1156,31 @@ func (m *Module) searchAndStore(ctx context.Context, itemID, itemType, title str
 		}
 	}
 
+	m.touchLastSearched(wantedID)
+}
+
+func (m *Module) touchLastSearched(wantedID string) {
 	m.mu.Lock()
-	m.db.Exec(`UPDATE wanted_items SET last_searched = datetime('now'), updated_at = datetime('now') WHERE id = ?`, itemID)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	m.db.Exec(`UPDATE wanted_items SET last_searched = datetime('now'), updated_at = datetime('now') WHERE id = ?`, wantedID)
+}
+
+func (m *Module) hasInFlightDownload(ctx context.Context, itemID string) bool {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil || itemID == "" {
+		return false
+	}
+	var n int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM download_history WHERE wanted_item_id = ? AND status = 'sent'`,
+		itemID,
+	).Scan(&n)
+	return err == nil && n > 0
 }
 
 // ── Quality Scoring ────────────────────────────────────────────
@@ -849,12 +1214,12 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 	if len(cleanTitles) == 0 && title != "" {
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
+	p := m.loadProfileDecision(ctx, profileID)
 	var scored []scoredRelease
 	if err := m.ensureFormats(ctx); err == nil {
 		m.mu.RLock()
 		fc := m.formatsClient
 		m.mu.RUnlock()
-		minScore := m.profileMinScore(ctx, profileID)
 		for _, r := range results {
 			if !releaseMatchesTitles(r.GetTitle(), cleanTitles) {
 				continue
@@ -869,7 +1234,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 				continue
 			}
 			s := int(resp.GetTotalScore())
-			if s > 0 && (minScore <= 0 || s >= minScore) {
+			if s > 0 && (p.MinScore <= 0 || s >= p.MinScore) {
 				scored = append(scored, scoredRelease{
 					GUID:             r.GetGuid(),
 					Title:            r.GetTitle(),
@@ -888,7 +1253,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		}
 	}
 	if len(scored) == 0 {
-		return scoreReleases(results, title, cleanTitles)
+		return filterByMinScore(scoreReleases(results, title, cleanTitles), p.MinScore)
 	}
 	sortScoredDesc(scored)
 	if len(scored) > 100 {
@@ -897,30 +1262,99 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 	return scored
 }
 
-func (m *Module) profileMinScore(ctx context.Context, profileID string) int {
+type profileDecision struct {
+	MinScore            int
+	CutoffScore         int
+	UpgradeAllowed      bool
+	UpgradeDelayMinutes int
+}
+
+func (m *Module) loadProfileDecision(ctx context.Context, profileID string) profileDecision {
+	p := profileDecision{UpgradeAllowed: true}
 	if err := m.ensureFormats(ctx); err != nil {
-		return 0
+		return p
 	}
 	m.mu.RLock()
 	fc := m.formatsClient
 	m.mu.RUnlock()
 	resp, err := fc.ListProfiles(ctx, &formatsv1.ListProfilesRequest{})
 	if err != nil {
-		return 0
+		return p
 	}
 	profiles := resp.GetProfiles()
+	var chosen *formatsv1.QualityProfile
 	if profileID != "" {
-		for _, p := range profiles {
-			if p.GetId() == profileID {
-				return int(p.GetMinScore())
+		for _, pr := range profiles {
+			if pr.GetId() == profileID {
+				chosen = pr
+				break
 			}
 		}
-		return 0
+	} else if len(profiles) > 0 {
+		chosen = profiles[0]
 	}
-	if len(profiles) > 0 {
-		return int(profiles[0].GetMinScore())
+	if chosen == nil {
+		return p
 	}
-	return 0
+	return profileDecision{
+		MinScore:            int(chosen.GetMinScore()),
+		CutoffScore:         int(chosen.GetCutoffScore()),
+		UpgradeAllowed:      chosen.GetUpgradeAllowed(),
+		UpgradeDelayMinutes: int(chosen.GetUpgradeDelayMinutes()),
+	}
+}
+
+func decideGrab(p profileDecision, missing bool, currentScore, candidateScore int, fileAcquiredAt, now time.Time) bool {
+	if candidateScore <= 0 {
+		return false
+	}
+	if p.MinScore > 0 && candidateScore < p.MinScore {
+		return false
+	}
+	if missing {
+		return true
+	}
+	if !p.UpgradeAllowed {
+		return false
+	}
+	if p.CutoffScore > 0 && currentScore >= p.CutoffScore {
+		return false
+	}
+	if candidateScore <= currentScore {
+		return false
+	}
+	if p.UpgradeDelayMinutes > 0 {
+		if fileAcquiredAt.IsZero() {
+			return false
+		}
+		if now.Before(fileAcquiredAt.Add(time.Duration(p.UpgradeDelayMinutes) * time.Minute)) {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldKeepForUpgrade(p profileDecision, ownedScore int) bool {
+	if !p.UpgradeAllowed {
+		return false
+	}
+	if p.CutoffScore > 0 && ownedScore >= p.CutoffScore {
+		return false
+	}
+	return true
+}
+
+func parseFlexibleTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 func filterByMinScore(scored []scoredRelease, minScore int) []scoredRelease {
@@ -1088,14 +1522,11 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	if err := m.ensureIndexer(ctx); err != nil {
+	clients, err := m.syncIndexers(ctx)
+	if err != nil {
 		slog.Debug("no indexer available", "error", err)
 		return nil
 	}
-
-	m.mu.RLock()
-	client := m.indexerClient
-	m.mu.RUnlock()
 
 	searchType := "search"
 	switch itemType {
@@ -1120,7 +1551,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		searchQuery = fmt.Sprintf("%s S%02dE%02d", query, season, episode)
 	}
 
-	resp, err := client.Search(ctx, &indexerv1.SearchRequest{
+	req := &indexerv1.SearchRequest{
 		Query:    searchQuery,
 		Type:     searchType,
 		Year:     int32(year),
@@ -1128,13 +1559,14 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		Episode:  int32(episode),
 		Absolute: int32(absolute),
 		Limit:    maxLimit,
-	})
-	if err != nil {
-		slog.Debug("indexer search failed", "error", err)
+	}
+
+	raw := parallelIndexerSearch(ctx, clients, req)
+	if len(raw) == 0 {
 		return nil
 	}
 
-	scored := m.scoreWithFormatsFallback(ctx, resp.GetResults(), query, cleanTitles, profileID)
+	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID)
 	if wantPack || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
@@ -1146,7 +1578,86 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		scored = filtered
 		sortScoredDesc(scored)
 	}
+
+	scored = dedupeScoredReleases(scored)
+	if int(maxLimit) > 0 && len(scored) > int(maxLimit) {
+		scored = scored[:maxLimit]
+	}
 	return scored
+}
+
+// parallelIndexerSearch fans out Search to every client; failures are logged and skipped.
+func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.IndexerServiceClient, req *indexerv1.SearchRequest) []*indexerv1.SearchResult {
+	if len(clients) == 0 {
+		return nil
+	}
+	type batch struct {
+		id      string
+		results []*indexerv1.SearchResult
+		err     error
+	}
+	ch := make(chan batch, len(clients))
+	var wg sync.WaitGroup
+	for id, client := range clients {
+		wg.Add(1)
+		go func(id string, client indexerv1.IndexerServiceClient) {
+			defer wg.Done()
+			resp, err := client.Search(ctx, req)
+			if err != nil {
+				ch <- batch{id: id, err: err}
+				return
+			}
+			ch <- batch{id: id, results: resp.GetResults()}
+		}(id, client)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	var all []*indexerv1.SearchResult
+	for b := range ch {
+		if b.err != nil {
+			slog.Warn("indexer search failed", "module", b.id, "error", b.err)
+			continue
+		}
+		all = append(all, b.results...)
+	}
+	return all
+}
+
+// dedupeScoredReleases keeps the highest-scored release per guid (or download_url if guid empty).
+// Input should already be sorted descending by score for stable preference; if not, higher score still wins.
+func dedupeScoredReleases(scored []scoredRelease) []scoredRelease {
+	if len(scored) <= 1 {
+		return scored
+	}
+	best := make(map[string]scoredRelease, len(scored))
+	order := make([]string, 0, len(scored))
+	for _, r := range scored {
+		key := r.GUID
+		if key == "" {
+			key = r.DownloadURL
+		}
+		if key == "" {
+			// No stable identity — keep as unique by appending synthetic key.
+			key = fmt.Sprintf("_anon_%d_%s", len(order), r.Title)
+		}
+		if prev, ok := best[key]; ok {
+			if r.Score > prev.Score {
+				best[key] = r
+			}
+			continue
+		}
+		best[key] = r
+		order = append(order, key)
+	}
+	out := make([]scoredRelease, 0, len(order))
+	for _, key := range order {
+		out = append(out, best[key])
+	}
+	sortScoredDesc(out)
+	return out
 }
 
 var (
@@ -1187,9 +1698,9 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	client := m.downloaderClient
 	m.mu.RUnlock()
 
-	addResp, err := client.AddTorrent(ctx, &downloaderv1.AddTorrentRequest{
-		Uri:   req.GetDownloadUrl(),
-		Label: req.GetItemType(),
+	addResp, err := client.AddTorrent(ctx, &cdlv1.AddTorrentRequest{
+		TorrentUrl: req.GetDownloadUrl(),
+		Category:   req.GetItemType(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("add torrent: %w", err)
@@ -1198,12 +1709,12 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	m.mu.Lock()
 	now := time.Now().UTC().Format(time.RFC3339)
 	m.db.ExecContext(ctx,
-		`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?)`,
+		`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
 		fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano()),
 		req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
 		req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
-		now, now,
+		now, now, addResp.GetTorrentId(),
 	)
 	var seriesID string
 	if req.GetItemType() == "tv" && req.GetItemId() != "" {
@@ -1224,14 +1735,14 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		GUID:             req.GetGuid(),
 		Indexer:          req.GetIndexerName(),
 		Size:             req.GetSize(),
-		DownloadID:       addResp.GetId(),
+		DownloadID:       addResp.GetTorrentId(),
 		SeriesID:         seriesID,
 	})
 	m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
 
-	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", req.GetDownloadProtocol(), "id", addResp.GetId())
+	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", req.GetDownloadProtocol(), "id", addResp.GetTorrentId())
 	return &automationv1.DispatchResponse{
-		DownloadId: addResp.GetId(),
+		DownloadId: addResp.GetTorrentId(),
 		Status:     "sent",
 	}, nil
 }
@@ -1356,7 +1867,7 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 	m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_history`).Scan(&total)
 
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, completed_at, created_at FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, completed_at, created_at, download_id FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		pageSize, offset,
 	)
 	if err != nil {
@@ -1366,10 +1877,10 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 
 	var records []*automationv1.DownloadRecord
 	for rows.Next() {
-		var id, wantedItemID, guid, title, indexer, downloadURL, downloadProto, status, createdAt string
+		var id, wantedItemID, guid, title, indexer, downloadURL, downloadProto, status, createdAt, downloadID string
 		var size, score int64
 		var sentAt, completedAt sql.NullString
-		if err := rows.Scan(&id, &wantedItemID, &guid, &title, &indexer, &size, &score, &downloadURL, &downloadProto, &status, &sentAt, &completedAt, &createdAt); err != nil {
+		if err := rows.Scan(&id, &wantedItemID, &guid, &title, &indexer, &size, &score, &downloadURL, &downloadProto, &status, &sentAt, &completedAt, &createdAt, &downloadID); err != nil {
 			slog.Error("scan history row", "error", err)
 			continue
 		}
@@ -1380,6 +1891,7 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 			DownloadUrl: downloadURL, DownloadProtocol: downloadProto,
 			Status: status, SentAt: sentAt.String,
 			CompletedAt: completedAt.String, CreatedAt: createdAt,
+			DownloadId: downloadID,
 		})
 	}
 
