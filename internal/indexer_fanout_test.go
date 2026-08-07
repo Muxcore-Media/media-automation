@@ -25,17 +25,25 @@ func (f *fakeIndexerClient) Search(ctx context.Context, in *indexerv1.SearchRequ
 }
 
 func TestDialAddrForModule(t *testing.T) {
-	if got := dialAddrForModule("indexer-a", "127.0.0.1:9401"); got != "indexer-a:9401" {
-		t.Errorf("got %q", got)
+	t.Setenv("MUXCORE_MESH_DIAL_LOCAL", "")
+	if got := dialAddrForModule("indexer-a", "127.0.0.1:9401"); got != "127.0.0.1:9401" {
+		t.Errorf("explicit host preserved, got %q", got)
 	}
 	if got := dialAddrForModule("indexer-a", ":9401"); got != "indexer-a:9401" {
-		t.Errorf("got %q", got)
+		t.Errorf("empty host → module DNS, got %q", got)
+	}
+	if got := dialAddrForModule("indexer-a", "0.0.0.0:9401"); got != "indexer-a:9401" {
+		t.Errorf("wildcard → module DNS, got %q", got)
 	}
 	if got := dialAddrForModule("", "127.0.0.1:9401"); got != "127.0.0.1:9401" {
 		t.Errorf("empty id should keep addr, got %q", got)
 	}
 	if got := dialAddrForModule("x", "not-a-hostport"); got != "not-a-hostport" {
 		t.Errorf("got %q", got)
+	}
+	t.Setenv("MUXCORE_MESH_DIAL_LOCAL", "true")
+	if got := dialAddrForModule("indexer-a", ":9401"); got != "127.0.0.1:9401" {
+		t.Errorf("local dial mode, got %q", got)
 	}
 }
 
