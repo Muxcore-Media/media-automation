@@ -343,15 +343,26 @@ func (m *Module) findModuleByCapability(ctx context.Context, cap string) (string
 	return "", fmt.Errorf("no %s module found", cap)
 }
 
-// dialAddrForModule rewrites host to module ID when HttpAddr has a port,
-// matching Docker/mesh DNS reachability used by request-media.
+// dialAddrForModule maps discovery HttpAddr to a dial target.
+// Explicit hosts (e.g. 127.0.0.1) are preserved for host-process MVP.
+// Empty / wildcard hosts rewrite to module ID for Docker DNS, unless
+// MUXCORE_MESH_DIAL_LOCAL=true (then 127.0.0.1).
 func dialAddrForModule(moduleID, httpAddr string) string {
 	if httpAddr == "" {
 		return ""
 	}
-	_, port, err := net.SplitHostPort(httpAddr)
-	if err == nil && port != "" && moduleID != "" {
-		return moduleID + ":" + port
+	host, port, err := net.SplitHostPort(httpAddr)
+	if err != nil || port == "" {
+		return httpAddr
+	}
+	if host != "" && host != "0.0.0.0" && host != "::" {
+		return net.JoinHostPort(host, port)
+	}
+	if os.Getenv("MUXCORE_MESH_DIAL_LOCAL") == "true" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	if moduleID != "" {
+		return net.JoinHostPort(moduleID, port)
 	}
 	return httpAddr
 }
@@ -553,7 +564,15 @@ func (m *Module) getScannerClient() scannerv1.ScannerServiceClient {
 // ── Event Subscriptions ─────────────────────────────────────────
 
 func (m *Module) subscribeToMediaEvents() {
-	time.Sleep(15 * time.Second)
+	delay := 15 * time.Second
+	if v := os.Getenv("AUTOMATION_EVENT_SUBSCRIBE_DELAY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			delay = d
+		}
+	}
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if m.mc == nil {
 		slog.Warn("media-automation: not connected to core, skipping event subscriptions")
 		return
