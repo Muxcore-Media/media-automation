@@ -17,34 +17,42 @@ jobs:
         with:
           path: core
           repository: Muxcore-Media/core
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-downloader
           repository: Muxcore-Media/contracts-downloader
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-indexer
           repository: Muxcore-Media/contracts-indexer
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: downloader-native-torrent
           repository: Muxcore-Media/downloader-native-torrent
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-custom-formats
           repository: Muxcore-Media/media-custom-formats
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-movies
           repository: Muxcore-Media/media-movies
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-scanner
           repository: Muxcore-Media/media-scanner
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-tvshows
           repository: Muxcore-Media/media-tvshows
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-automation
@@ -65,34 +73,42 @@ jobs:
         with:
           path: core
           repository: Muxcore-Media/core
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-downloader
           repository: Muxcore-Media/contracts-downloader
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-indexer
           repository: Muxcore-Media/contracts-indexer
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: downloader-native-torrent
           repository: Muxcore-Media/downloader-native-torrent
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-custom-formats
           repository: Muxcore-Media/media-custom-formats
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-movies
           repository: Muxcore-Media/media-movies
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-scanner
           repository: Muxcore-Media/media-scanner
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-tvshows
           repository: Muxcore-Media/media-tvshows
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-automation
@@ -110,34 +126,42 @@ jobs:
         with:
           path: core
           repository: Muxcore-Media/core
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-downloader
           repository: Muxcore-Media/contracts-downloader
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-indexer
           repository: Muxcore-Media/contracts-indexer
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: downloader-native-torrent
           repository: Muxcore-Media/downloader-native-torrent
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-custom-formats
           repository: Muxcore-Media/media-custom-formats
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-movies
           repository: Muxcore-Media/media-movies
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-scanner
           repository: Muxcore-Media/media-scanner
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-tvshows
           repository: Muxcore-Media/media-tvshows
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-automation
@@ -159,34 +183,42 @@ jobs:
         with:
           path: core
           repository: Muxcore-Media/core
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-downloader
           repository: Muxcore-Media/contracts-downloader
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: contracts-indexer
           repository: Muxcore-Media/contracts-indexer
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: downloader-native-torrent
           repository: Muxcore-Media/downloader-native-torrent
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-custom-formats
           repository: Muxcore-Media/media-custom-formats
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-movies
           repository: Muxcore-Media/media-movies
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-scanner
           repository: Muxcore-Media/media-scanner
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-tvshows
           repository: Muxcore-Media/media-tvshows
+          token: ${{ secrets.MUXCORE_CI_TOKEN }}
       - uses: actions/checkout@v7
         with:
           path: media-automation
