@@ -10,11 +10,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: core
+          repository: Muxcore-Media/core
+      - uses: actions/checkout@v7
+        with:
+          path: contracts-downloader
+          repository: Muxcore-Media/contracts-downloader
+      - uses: actions/checkout@v7
+        with:
+          path: contracts-indexer
+          repository: Muxcore-Media/contracts-indexer
+      - uses: actions/checkout@v7
+        with:
+          path: downloader-native-torrent
+          repository: Muxcore-Media/downloader-native-torrent
+      - uses: actions/checkout@v7
+        with:
+          path: media-custom-formats
+          repository: Muxcore-Media/media-custom-formats
+      - uses: actions/checkout@v7
+        with:
+          path: media-movies
+          repository: Muxcore-Media/media-movies
+      - uses: actions/checkout@v7
+        with:
+          path: media-scanner
+          repository: Muxcore-Media/media-scanner
+      - uses: actions/checkout@v7
+        with:
+          path: media-tvshows
+          repository: Muxcore-Media/media-tvshows
+      - uses: actions/checkout@v7
+        with:
+          path: media-automation
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
-      - run: go build -o media-automation ./cmd/module
+      - working-directory: ./media-automation
+        run: go build -o media-automation ./cmd/module
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          files: media-automation
+          files: media-automation/media-automation
