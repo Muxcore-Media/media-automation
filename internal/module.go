@@ -720,24 +720,28 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	}
 
 	savePath := payload.SavePath
-	_, err = client.ImportPath(ctx, &scannerv1.ImportPathRequest{Path: savePath})
-	if err != nil {
-		slog.Warn("ImportPath failed", "download_id", payload.ID, "path", savePath, "error", err)
-		if _, uerr := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"import_failed", now, histID,
-		); uerr != nil {
-			slog.Warn("mark import_failed", "id", histID, "error", uerr)
+	// Import can take a long time (large copies); never block the event loop.
+	go func(histID, downloadID, savePath, now string) {
+		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		_, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: savePath})
+		if err != nil {
+			slog.Warn("ImportPath failed", "download_id", downloadID, "path", savePath, "error", err)
+			if _, uerr := db.ExecContext(context.Background(),
+				`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+				"import_failed", now, histID,
+			); uerr != nil {
+				slog.Warn("mark import_failed", "id", histID, "error", uerr)
+			}
+			return
 		}
-		return
-	}
-
-	if _, err := db.ExecContext(ctx,
-		`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-		"completed", now, histID,
-	); err != nil {
-		slog.Warn("mark download completed", "id", histID, "error", err)
-	}
+		if _, err := db.ExecContext(context.Background(),
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"completed", now, histID,
+		); err != nil {
+			slog.Warn("mark download completed", "id", histID, "error", err)
+		}
+	}(histID, payload.ID, savePath, now)
 }
 
 func (m *Module) syncTVSeriesWithRetry(seriesID string) {
@@ -1715,9 +1719,17 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 
 	m.mu.RLock()
 	client := m.downloaderClient
+	db := m.db
 	m.mu.RUnlock()
+	if client == nil {
+		return nil, fmt.Errorf("no downloader available")
+	}
 
-	addResp, err := client.AddTorrent(ctx, &cdlv1.AddTorrentRequest{
+	// Do not inherit the caller's deadline for AddTorrent: completion-side
+	// ImportPath can run for minutes and must not cancel magnet handoff.
+	addCtx, addCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer addCancel()
+	addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
 		TorrentUrl: req.GetDownloadUrl(),
 		Category:   req.GetItemType(),
 	})
@@ -1725,24 +1737,27 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		return nil, fmt.Errorf("add torrent: %w", err)
 	}
 
-	m.mu.Lock()
 	now := time.Now().UTC().Format(time.RFC3339)
-	m.db.ExecContext(ctx,
-		`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
-		fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano()),
-		req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
-		req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
-		now, now, addResp.GetTorrentId(),
-	)
+	histID := fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano())
+	if db != nil {
+		if _, err := db.ExecContext(context.Background(),
+			`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
+			histID,
+			req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
+			req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
+			now, now, addResp.GetTorrentId(),
+		); err != nil {
+			slog.Warn("insert download_history", "error", err)
+		}
+	}
 	var seriesID string
-	if req.GetItemType() == "tv" && req.GetItemId() != "" {
-		_ = m.db.QueryRowContext(ctx,
+	if db != nil && req.GetItemType() == "tv" && req.GetItemId() != "" {
+		_ = db.QueryRowContext(context.Background(),
 			`SELECT COALESCE(series_id, '') FROM wanted_items WHERE item_type = ? AND item_id = ? LIMIT 1`,
 			req.GetItemType(), req.GetItemId(),
 		).Scan(&seriesID)
 	}
-	m.mu.Unlock()
 
 	payload, _ := json.Marshal(contracts.DownloadDispatchedPayload{
 		Title:            req.GetTitle(),
@@ -1757,7 +1772,8 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		DownloadID:       addResp.GetTorrentId(),
 		SeriesID:         seriesID,
 	})
-	m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
+	// Publish async so a slow bus/policy path cannot block the Dispatch RPC.
+	go m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
 
 	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", req.GetDownloadProtocol(), "id", addResp.GetTorrentId())
 	return &automationv1.DispatchResponse{
