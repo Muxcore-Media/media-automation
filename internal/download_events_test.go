@@ -71,10 +71,24 @@ func TestDownloadCompletedImportsPath(t *testing.T) {
 		Name:     "Fight Club",
 	})
 
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fake.importPathCalls) == 1 && fake.importPathCalls[0] == savePath {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(fake.importPathCalls) != 1 || fake.importPathCalls[0] != savePath {
 		t.Fatalf("ImportPath calls: got %v, want [%q]", fake.importPathCalls, savePath)
 	}
-	status, completedAt := historyStatus(t, m, histID)
+	var status, completedAt string
+	for time.Now().Before(deadline) {
+		status, completedAt = historyStatus(t, m, histID)
+		if status == "completed" && completedAt != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if status != "completed" {
 		t.Errorf("status: got %q, want completed", status)
 	}
