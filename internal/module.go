@@ -1810,9 +1810,12 @@ func (m *Module) AddToQueue(ctx context.Context, req *automationv1.AddToQueueReq
 }
 
 func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest) (*automationv1.GetQueueResponse, error) {
+	// Copy db under lock then release so writers (library sync / ImportPath bookkeeping)
+	// cannot stall the admin UI for the duration of the query.
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.db == nil {
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
 		return nil, fmt.Errorf("not initialized")
 	}
 
@@ -1842,11 +1845,11 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 	}
 
 	var total int
-	m.db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
+	_ = db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
 	query += ` ORDER BY updated_at DESC LIMIT ? OFFSET ?`
 	qargs := append(args, pageSize, offset)
 
-	rows, err := m.db.QueryContext(ctx, query, qargs...)
+	rows, err := db.QueryContext(ctx, query, qargs...)
 	if err != nil {
 		return nil, fmt.Errorf("query queue: %w", err)
 	}
@@ -1883,8 +1886,9 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 
 func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryRequest) (*automationv1.GetHistoryResponse, error) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.db == nil {
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
 		return nil, fmt.Errorf("not initialized")
 	}
 
@@ -1899,9 +1903,9 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 	offset := (page - 1) * pageSize
 
 	var total int
-	m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_history`).Scan(&total)
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_history`).Scan(&total)
 
-	rows, err := m.db.QueryContext(ctx,
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, completed_at, created_at, download_id FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		pageSize, offset,
 	)
