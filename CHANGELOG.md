@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.2 (2026-08-09)
 
 - Per-series overrides: `series_overrides` table + setting/`AUTOMATION_SERIES_OVERRIDES_JSON` (`delay_minutes`, preferred/ignored release groups)
 - Drain wanted rows before indexer searches (avoid holding SQLite cursor across RPCs)
@@ -13,6 +13,10 @@
 - Multi-indexer fan-out: discover all `indexer` modules, parallel `Search`, merge/dedupe by GUID (or download URL), then score and limit
 - Persist downloader id on `download_history.download_id` at Dispatch; expose on `GetHistory`
 - On `download.completed` / `download.failed`: correlate history by `download_id`, call media-scanner `ImportPath` on success, update history status (`completed` / `failed` / `import_failed`)
+
+## v0.1.1 (2026-08-09)
+
+- Patch release of MVP host hardening (see GitHub Release notes)
 
 ## v0.1.0 (2026-06-14)
 
