@@ -62,3 +62,35 @@ func TestSeriesOverrideDelay(t *testing.T) {
 		t.Fatal("expected delay not elapsed")
 	}
 }
+
+// TestSeriesOverrideLookupApplied mirrors searchAndStore: load override by
+// series_id then filter/boost release groups before grab.
+func TestSeriesOverrideLookupApplied(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	raw := `[{"series_id":"series_anime","preferred_groups":["EMBER"],"ignored_groups":["CAMRG"]}]`
+	if err := m.replaceSeriesOverridesJSON(ctx, m.db, raw); err != nil {
+		t.Fatal(err)
+	}
+	o := m.seriesOverride(ctx, "series_anime")
+	if o == nil {
+		t.Fatal("expected series override")
+	}
+	in := []scoredRelease{
+		{Title: "Show.S01E01.1080p.WEB-DL-CAMRG", Score: 200, GUID: "cam"},
+		{Title: "Show.S01E01.1080p.WEB-DL-EMBER", Score: 100, GUID: "good"},
+		{Title: "Show.S01E01.1080p.WEB-DL-OTHER", Score: 150, GUID: "plain"},
+	}
+	out := applyReleaseGroupOverrides(in, o.PreferredGroups, o.IgnoredGroups)
+	if len(out) != 2 {
+		t.Fatalf("len=%d want 2", len(out))
+	}
+	if out[0].GUID != "good" {
+		t.Fatalf("expected EMBER first after boost, got %s score=%d", out[0].GUID, out[0].Score)
+	}
+	if m.seriesOverride(ctx, "missing") != nil {
+		t.Fatal("expected nil for unknown series")
+	}
+}
+
