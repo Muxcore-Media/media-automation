@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 	upgrades := m.enableAutomaticUpgrades
 	rss := m.rssSyncMinutes
 	m.mu.RUnlock()
+	overridesJSON, _ := m.listSeriesOverridesJSON(context.Background())
 	return []contracts.SettingDef{
 		{
 			Key:         "enable_automatic_search",
@@ -44,6 +46,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Description: "How often to sync RSS / wanted searches",
 			Group:       "Automation",
 		},
+		{
+			Key:         "series_overrides_json",
+			Label:       "Per-series overrides (JSON)",
+			Type:        contracts.SettingTypeString,
+			Default:     "[]",
+			Value:       overridesJSON,
+			Description: `JSON array: [{"series_id":"…","delay_minutes":60,"preferred_groups":["FLUX"],"ignored_groups":["RARBG"]}]. Replaces the full table on update.`,
+			Group:       "Overrides",
+		},
 	}
 }
 
@@ -68,6 +79,14 @@ func (m *Module) updateSetting(key, value string) error {
 		m.rssSyncMinutes = n
 		m.mu.Unlock()
 		return nil
+	case "series_overrides_json", "AUTOMATION_SERIES_OVERRIDES_JSON":
+		m.mu.RLock()
+		db := m.db
+		m.mu.RUnlock()
+		if db == nil {
+			return fmt.Errorf("database not ready")
+		}
+		return m.replaceSeriesOverridesJSON(context.Background(), db, value)
 	default:
 		return fmt.Errorf("unknown setting %q", key)
 	}
