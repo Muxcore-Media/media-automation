@@ -108,7 +108,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.3",
+		Version:        "0.1.6",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -708,6 +708,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		); uerr != nil {
 			slog.Warn("mark import_failed", "id", histID, "error", uerr)
 		}
+		m.publishImportFailed(payload.ID, payload.SavePath, err.Error())
 		return
 	}
 
@@ -720,6 +721,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		); uerr != nil {
 			slog.Warn("mark import_failed", "id", histID, "error", uerr)
 		}
+		m.publishImportFailed(payload.ID, payload.SavePath, "scanner client unavailable")
 		return
 	}
 
@@ -737,6 +739,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 			); uerr != nil {
 				slog.Warn("mark import_failed", "id", histID, "error", uerr)
 			}
+			m.publishImportFailed(downloadID, savePath, err.Error())
 			return
 		}
 		if _, err := db.ExecContext(context.Background(),
@@ -1802,6 +1805,20 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		DownloadId: addResp.GetTorrentId(),
 		Status:     "sent",
 	}, nil
+}
+
+
+func (m *Module) publishImportFailed(downloadID, path, errMsg string) {
+	payload, err := json.Marshal(contracts.ImportFailedPayload{
+		DownloadID: downloadID,
+		Path:       path,
+		Error:      errMsg,
+	})
+	if err != nil {
+		slog.Warn("marshal import failed payload", "error", err)
+		return
+	}
+	go m.publishEvent(context.Background(), contracts.EventImportFailed, payload)
 }
 
 func (m *Module) publishEvent(ctx context.Context, eventType string, payload []byte) {
