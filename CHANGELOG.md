@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.6 (2026-08-10)
+
+- Publish `media.import.failed` when scanner is unavailable or `ImportPath` errors (contracts v0.5.3)
+
 ## v0.1.3 (2026-08-10)
 
 - Anime absolute-episode polish: `AddToQueue` / `SearchItem` accept `absolute_number`/`absolute` + `series_type` (+ optional `series_id`); skip season-pack wanted rows for `series_type=anime` so absolute searches stay episode-grain
