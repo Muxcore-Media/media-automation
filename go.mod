@@ -6,9 +6,9 @@ require (
 	github.com/Muxcore-Media/contracts-downloader v0.1.0
 	github.com/Muxcore-Media/contracts-indexer v0.1.0
 	github.com/Muxcore-Media/core v0.5.1
-	github.com/Muxcore-Media/core/pkg/contracts v0.5.1
+	github.com/Muxcore-Media/core/pkg/contracts v0.5.2
 	github.com/Muxcore-Media/core/sdk/go/client v0.5.1
-	github.com/Muxcore-Media/core/sdk/go/module v0.5.1
+	github.com/Muxcore-Media/core/sdk/go/module v0.5.2
 	github.com/Muxcore-Media/media-custom-formats v0.1.1
 	github.com/Muxcore-Media/media-movies v0.1.0
 	github.com/Muxcore-Media/media-scanner v0.1.1
