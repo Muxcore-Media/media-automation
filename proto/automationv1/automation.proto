@@ -19,6 +19,8 @@ message SearchItemRequest {
   int32 episode = 6;
   int32 limit = 7;
   string quality_profile_id = 8;
+  int32 absolute = 9;       // anime absolute episode number
+  string series_type = 10;  // "standard", "daily", or "anime"
 }
 
 message SearchItemResponse {
@@ -67,6 +69,9 @@ message AddToQueueRequest {
   int32 season_number = 6;
   int32 episode_number = 7;
   string quality_profile_id = 8;
+  int32 absolute_number = 9;  // anime absolute episode number
+  string series_type = 10;    // "standard", "daily", or "anime"
+  string series_id = 11;      // library series id (for overrides / grouping)
 }
 
 message AddToQueueResponse {
