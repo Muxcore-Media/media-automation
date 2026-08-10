@@ -466,6 +466,53 @@ func TestSeasonPackEligible(t *testing.T) {
 	}
 }
 
+func TestPreferSeasonPackSkipsAnime(t *testing.T) {
+	if preferSeasonPack(5, "anime") {
+		t.Fatal("anime should not prefer season packs (absolute episodes)")
+	}
+	if !preferSeasonPack(5, "standard") {
+		t.Fatal("standard with 5 missing should prefer pack")
+	}
+	if preferSeasonPack(2, "standard") {
+		t.Fatal("standard with 2 missing should not prefer pack")
+	}
+}
+
+func TestAddToQueueAnimeAbsolute(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	_, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		ItemType:         "tv",
+		ItemId:           "ep_abs_150",
+		TmdbId:           65495,
+		Title:            "One Piece",
+		Year:             1999,
+		SeasonNumber:     1,
+		EpisodeNumber:    12,
+		AbsoluteNumber:   150,
+		SeriesType:       "anime",
+		SeriesId:         "tv_65495",
+		QualityProfileId: "qp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var abs int
+	var seriesType, seriesID string
+	err = m.db.QueryRow(
+		`SELECT absolute_number, series_type, series_id FROM wanted_items WHERE item_id = ?`,
+		"ep_abs_150",
+	).Scan(&abs, &seriesType, &seriesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abs != 150 || seriesType != "anime" || seriesID != "tv_65495" {
+		t.Fatalf("got abs=%d type=%s series=%s", abs, seriesType, seriesID)
+	}
+}
+
 func TestDecideGrab(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	base := profileDecision{MinScore: 50, CutoffScore: 200, UpgradeAllowed: true, UpgradeDelayMinutes: 60}
