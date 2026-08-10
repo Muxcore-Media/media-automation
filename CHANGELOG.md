@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.3 (2026-08-10)
+
+- Anime absolute-episode polish: `AddToQueue` / `SearchItem` accept `absolute_number`/`absolute` + `series_type` (+ optional `series_id`); skip season-pack wanted rows for `series_type=anime` so absolute searches stay episode-grain
+
 ## v0.1.2 (2026-08-09)
 
 - Per-series overrides: `series_overrides` table + setting/`AUTOMATION_SERIES_OVERRIDES_JSON` (`delay_minutes`, preferred/ignored release groups)
