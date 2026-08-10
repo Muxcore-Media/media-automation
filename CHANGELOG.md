@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Per-series overrides: `series_overrides` table + setting/`AUTOMATION_SERIES_OVERRIDES_JSON` (`delay_minutes`, preferred/ignored release groups)
+- Drain wanted rows before indexer searches (avoid holding SQLite cursor across RPCs)
 - GetQueue / GetHistory release `mu` before SQLite work so admin `/automation` stays interactive during library sync / ImportPath
 - Enforce quality-profile cutoff, upgrades, and upgrade delay: keep wanted rows after import when below cutoff and `upgrade_allowed`; grab only strictly better scores after `upgrade_delay_minutes`
 - Apply `min_score` on local scoring fallback; skip Dispatch while a download for the item is still `sent`
