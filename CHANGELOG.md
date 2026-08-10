@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.1.8] — 2026-08-10
+
+### Tests
+- Offline regression: Dispatch → `download.completed` → scanner `ImportPath`
+- Queue/history pagination load + clamp tests at admin-ui page sizes (25/10)
+- Series override lookup + preferred/ignored release-group application coverage
+
 ## [0.1.7] — 2026-08-10
 
 ### Fixed
