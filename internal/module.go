@@ -108,7 +108,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.0",
+		Version:        "0.1.3",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -878,7 +878,7 @@ func (m *Module) syncWantedTV(ctx context.Context, seriesID string, seen map[str
 			continue
 		}
 		sample := b.items[0]
-		if seasonPackEligible(len(b.items)) {
+		if preferSeasonPack(len(b.items), sample.GetSeriesType()) {
 			packID := fmt.Sprintf("%s:S%d:pack", k.seriesID, k.season)
 			if seen != nil {
 				seen["tv:"+packID] = struct{}{}
@@ -909,6 +909,11 @@ func (m *Module) syncWantedTV(ctx context.Context, seriesID string, seen map[str
 
 func seasonPackEligible(missingCount int) bool {
 	return missingCount >= 3
+}
+
+// preferSeasonPack is false for anime so absolute-number episode searches stay episode-grain.
+func preferSeasonPack(missingCount int, seriesType string) bool {
+	return seasonPackEligible(missingCount) && seriesType != "anime"
 }
 
 func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK bool) {
@@ -1534,7 +1539,8 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	}
 
 	results := m.searchWithIndexer(ctx, req.GetItemType(), req.GetQuery(),
-		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()), 0, "", int(req.GetLimit()), req.GetQualityProfileId(),
+		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()),
+		int(req.GetAbsolute()), req.GetSeriesType(), int(req.GetLimit()), req.GetQualityProfileId(),
 		[]string{cleanMatchTitle(req.GetQuery())})
 
 	var matches []*automationv1.ReleaseMatch
@@ -1820,6 +1826,9 @@ func (m *Module) AddToQueue(ctx context.Context, req *automationv1.AddToQueueReq
 		SeasonNumber:     req.GetSeasonNumber(),
 		EpisodeNumber:    req.GetEpisodeNumber(),
 		QualityProfileID: req.GetQualityProfileId(),
+		AbsoluteNumber:   req.GetAbsoluteNumber(),
+		SeriesType:       req.GetSeriesType(),
+		SeriesID:         req.GetSeriesId(),
 	})
 	id := fmt.Sprintf("w_%s_%s", req.GetItemType(), req.GetItemId())
 	return &automationv1.AddToQueueResponse{QueueId: id}, nil
