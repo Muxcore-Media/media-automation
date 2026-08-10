@@ -1,10 +1,15 @@
 {
   "name": "Media Automation",
-  "description": "Automation engine for media libraries — monitors wanted items, searches searchers, scores releases, and dispatches downloads",
-  "version": "0.1.0",
+  "description": "Automation engine for media libraries \u2014 monitors wanted items, searches searchers, scores releases, and dispatches downloads",
+  "version": "0.1.7",
   "author": "MuxCore",
-  "roles": ["automation"],
-  "capabilities": ["media.automation", "settings"],
+  "roles": [
+    "automation"
+  ],
+  "capabilities": [
+    "media.automation",
+    "settings"
+  ],
   "contracts": [],
   "minCoreVersion": "0.4.0"
 }
