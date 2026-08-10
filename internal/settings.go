@@ -92,9 +92,14 @@ func (m *Module) updateSetting(key, value string) error {
 	}
 }
 
+func (m *Module) Settings() []contracts.SettingDef {
+	return m.settingsDefs()
+}
+
+func (m *Module) UpdateSetting(key, value string) error {
+	return m.updateSetting(key, value)
+}
+
 func (m *Module) registerSettingsMesh(srv *grpc.Server) {
-	modulesdk.RegisterMeshHandler(srv, m.id, modulesdk.SettingsHandler{
-		List:   m.settingsDefs,
-		Update: m.updateSetting,
-	})
+	modulesdk.RegisterSettings(srv, m.id, m)
 }
