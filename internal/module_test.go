@@ -424,7 +424,7 @@ func TestSearchAndStoreDoesNotClearMissing(t *testing.T) {
 	m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'mv1'`).Scan(&id)
 	m.mu.RUnlock()
 
-	m.searchAndStore(ctx, id, "movie", "mv1", "A", 1, 2000, 0, 0, 0, "", "", []string{cleanMatchTitle("A")}, true, 0, "")
+	m.searchAndStore(ctx, id, "movie", "mv1", "A", 1, 2000, 0, 0, 0, "", "", "", []string{cleanMatchTitle("A")}, true, 0, "")
 
 	queue, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
 	if err != nil {
