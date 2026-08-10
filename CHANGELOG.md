@@ -1,5 +1,11 @@
 # Changelog
 
+
+## [0.1.7] — 2026-08-10
+
+### Fixed
+- Sync Info()/muxcore.json version to **0.1.7**.
+
 ## v0.1.6 (2026-08-10)
 
 - Publish `media.import.failed` when scanner is unavailable or `ImportPath` errors (contracts v0.5.3)
