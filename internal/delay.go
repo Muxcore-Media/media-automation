@@ -55,6 +55,14 @@ func (m *Module) delayMinutesFor(ctx context.Context, protocol string) int {
 	return mins
 }
 
+// delayMinutesForItem uses a per-series override when set, else protocol delay_profiles.
+func (m *Module) delayMinutesForItem(ctx context.Context, protocol, seriesID string) int {
+	if o := m.seriesOverride(ctx, seriesID); o != nil && o.DelayMinutes != nil {
+		return *o.DelayMinutes
+	}
+	return m.delayMinutesFor(ctx, protocol)
+}
+
 func (m *Module) noteReleaseSeen(ctx context.Context, guid string) time.Time {
 	if guid == "" {
 		return time.Now().UTC()
@@ -79,8 +87,8 @@ func (m *Module) noteReleaseSeen(ctx context.Context, guid string) time.Time {
 	return now
 }
 
-func (m *Module) delayElapsed(ctx context.Context, guid, protocol string, now time.Time) bool {
-	mins := m.delayMinutesFor(ctx, protocol)
+func (m *Module) delayElapsed(ctx context.Context, guid, protocol, seriesID string, now time.Time) bool {
+	mins := m.delayMinutesForItem(ctx, protocol, seriesID)
 	if mins <= 0 {
 		return true
 	}

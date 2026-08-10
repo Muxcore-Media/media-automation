@@ -27,6 +27,7 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 - **Quality scoring** — prefers `media-custom-formats` `ScoreRelease` when available; falls back to local ranking by resolution (2160p > 1080p > 720p), format (Remux > BluRay > WEB-DL > HDTV), seeders, and size sanity
 - **Upgrade / cutoff / delay** — after import, keeps wanted items below profile cutoff when upgrades are allowed; re-searches and grabs only strictly better scores after `upgrade_delay_minutes`
 - **Protocol delay profiles** — waits before grab using seeded `delay_profiles` (default: torrent 15m, usenet 0)
+- **Per-series overrides** — optional `delay_minutes` plus preferred/ignored release groups (`series_overrides_json` setting or `AUTOMATION_SERIES_OVERRIDES_JSON`)
 - **Multi-indexer search** — discovers **all** modules advertising capability `indexer`, searches them in parallel, merges results, dedupes by GUID (or download URL), then scores and limits
 - **Download dispatch** — sends selected releases to a downloader module
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
@@ -59,6 +60,7 @@ For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or w
 | `MUXCORE_GRPC_ADDR` | `localhost:9090` | Core mesh gRPC address |
 | `MUXCORE_MODULE_ID` | `media-automation` | Module identity (overrides `--muxcore-module-id`) |
 | `MUXCORE_INSECURE_DISABLE_TLS` | `false` | Disable TLS for dev |
+| `AUTOMATION_SERIES_OVERRIDES_JSON` | `[]` | Seed/replace per-series overrides on init (JSON array) |
 
 ---
 

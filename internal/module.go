@@ -198,6 +198,10 @@ func (m *Module) Init(ctx context.Context) error {
 		db.Close()
 		return fmt.Errorf("migrate delay tables: %w", err)
 	}
+	if err := m.migrateSeriesOverrides(ctx, db); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate series overrides: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE download_history ADD COLUMN download_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return fmt.Errorf("migrate download_history: %w", err)
@@ -1125,25 +1129,34 @@ func (m *Module) searchQueuedItems() {
 		return
 	}
 
-	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, '') FROM wanted_items WHERE monitored = 1 AND (missing = 1 OR missing = 0)`)
+	type wantedRow struct {
+		id, itemType, itemID, title, profileID, seriesType, seriesID, cleanRaw, fileAcquiredAt string
+		tmdbID, year, seasonNum, epNum, absNum, missing, currentScore                          int64
+	}
+
+	// Drain rows before indexer RPCs so SQLite is not blocked across searches.
+	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(series_id, ''), COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, '') FROM wanted_items WHERE monitored = 1 AND (missing = 1 OR missing = 0)`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
 	}
-	defer rows.Close()
-
+	var batch []wantedRow
 	for rows.Next() {
-		var id, itemType, itemID, title, profileID, seriesType, cleanRaw, fileAcquiredAt string
-		var tmdbID, year, seasonNum, epNum, absNum, missing, currentScore int64
-		if err := rows.Scan(&id, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum, &profileID, &absNum, &seriesType, &cleanRaw, &missing, &currentScore, &fileAcquiredAt); err != nil {
+		var r wantedRow
+		if err := rows.Scan(&r.id, &r.itemType, &r.itemID, &r.tmdbID, &r.title, &r.year, &r.seasonNum, &r.epNum, &r.profileID, &r.absNum, &r.seriesType, &r.seriesID, &r.cleanRaw, &r.missing, &r.currentScore, &r.fileAcquiredAt); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
-		m.searchAndStore(context.Background(), id, itemType, itemID, title, int(tmdbID), int(year), int(seasonNum), int(epNum), int(absNum), seriesType, profileID, decodeCleanTitles(cleanRaw), missing != 0, int(currentScore), fileAcquiredAt)
+		batch = append(batch, r)
+	}
+	_ = rows.Close()
+
+	for _, r := range batch {
+		m.searchAndStore(context.Background(), r.id, r.itemType, r.itemID, r.title, int(r.tmdbID), int(r.year), int(r.seasonNum), int(r.epNum), int(r.absNum), r.seriesType, r.seriesID, r.profileID, decodeCleanTitles(r.cleanRaw), r.missing != 0, int(r.currentScore), r.fileAcquiredAt)
 	}
 }
 
-func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
+func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, seriesID, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
 	if m.hasInFlightDownload(ctx, itemID) {
 		slog.Debug("skip search: in-flight download", "item", itemID)
 		m.touchLastSearched(wantedID)
@@ -1151,6 +1164,9 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 	}
 
 	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID, cleanTitles)
+	if o := m.seriesOverride(ctx, seriesID); o != nil {
+		results = applyReleaseGroupOverrides(results, o.PreferredGroups, o.IgnoredGroups)
+	}
 	if len(results) > 0 {
 		best := results[0]
 		slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score)
@@ -1160,7 +1176,7 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 		now := time.Now().UTC()
 		if best.DownloadURL != "" &&
 			decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
-			m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, now) {
+			m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, seriesID, now) {
 			_, err := m.Dispatch(ctx, &automationv1.DispatchRequest{
 				Guid:             best.GUID,
 				Title:            best.Title,
