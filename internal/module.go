@@ -108,7 +108,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.8",
+		Version:      "0.1.7",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1075,7 +1075,7 @@ func (m *Module) resolveOwnedScore(ctx context.Context, itemID, filePath, qualit
 			}
 		}
 	}
-	return scoreRelease(&indexerv1.SearchResult{Title: title}, nil)
+	return scoreRelease(&indexerv1.SearchResult{Title: title}, nil, 0)
 }
 
 func (m *Module) scoreFromHistory(ctx context.Context, itemID string) int {
@@ -1257,7 +1257,7 @@ type scoredRelease struct {
 	Score            int
 }
 
-func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string) []scoredRelease {
+func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string, year int) []scoredRelease {
 	if len(cleanTitles) == 0 && title != "" {
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
@@ -1268,7 +1268,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		fc := m.formatsClient
 		m.mu.RUnlock()
 		for _, r := range results {
-			if !releaseMatchesTitles(r.GetTitle(), cleanTitles) {
+			if !releaseMatchesTitles(r.GetTitle(), cleanTitles, year) {
 				continue
 			}
 			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
@@ -1300,7 +1300,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		}
 	}
 	if len(scored) == 0 {
-		return filterByMinScore(scoreReleases(results, title, cleanTitles), p.MinScore)
+		return filterByMinScore(scoreReleases(results, title, cleanTitles, year), p.MinScore)
 	}
 	sortScoredDesc(scored)
 	if len(scored) > 100 {
@@ -1417,13 +1417,13 @@ func filterByMinScore(scored []scoredRelease, minScore int) []scoredRelease {
 	return out
 }
 
-func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles []string) []scoredRelease {
+func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles []string, year int) []scoredRelease {
 	if len(cleanTitles) == 0 && title != "" {
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
 	var scored []scoredRelease
 	for _, r := range results {
-		s := scoreRelease(r, cleanTitles)
+		s := scoreRelease(r, cleanTitles, year)
 		if s > 0 {
 			scored = append(scored, scoredRelease{
 				GUID:             r.GetGuid(),
@@ -1448,9 +1448,9 @@ func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles 
 	return scored
 }
 
-func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string) int {
+func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string, year int) int {
 	name := r.GetTitle()
-	if !releaseMatchesTitles(name, cleanTitles) {
+	if !releaseMatchesTitles(name, cleanTitles, year) {
 		return 0
 	}
 	score := 0
@@ -1598,6 +1598,9 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	} else if itemType == "tv" && season > 0 && episode > 0 {
 		searchQuery = fmt.Sprintf("%s S%02dE%02d", query, season, episode)
 	}
+	if year > 0 && itemType == "movie" {
+		searchQuery = fmt.Sprintf("%s %d", searchQuery, year)
+	}
 
 	req := &indexerv1.SearchRequest{
 		Query:    searchQuery,
@@ -1614,7 +1617,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		return nil
 	}
 
-	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID)
+	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID, year)
 	if wantPack || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
