@@ -127,7 +127,7 @@ func TestParallelIndexerSearchGUIDDedupeAcrossModules(t *testing.T) {
 		}},
 	}
 	raw := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"})
-	scored := scoreReleases(raw, "Fight Club", []string{"fight club"})
+	scored := scoreReleases(raw, "Fight Club", []string{"fight club"}, 1999)
 	scored = dedupeScoredReleases(scored)
 	if len(scored) != 1 {
 		t.Fatalf("expected 1 after dedupe, got %d (%+v)", len(scored), scored)
