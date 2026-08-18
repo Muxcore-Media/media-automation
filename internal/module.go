@@ -141,7 +141,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.16",
+		Version:        "0.1.17",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1928,16 +1928,12 @@ var (
 func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bool, seriesType string) int {
 	boost := 0
 	if wantPack {
+		lo, hi, ok := packSeasonsCovered(name)
+		if !ok || season < lo || season > hi {
+			return -200
+		}
 		if reSeasonPackTitle.MatchString(name) {
 			boost += 50
-		}
-		if m := reSeasonInTitle.FindStringSubmatch(name); len(m) >= 2 {
-			if sn, err := strconv.Atoi(m[1]); err == nil && sn != season {
-				return -200
-			}
-		}
-		if episodeToken := fmt.Sprintf("E%02d", 1); strings.Contains(strings.ToUpper(name), episodeToken) && !reSeasonPackTitle.MatchString(name) {
-			boost -= 20
 		}
 	}
 	if seriesType == "anime" && absolute > 0 {

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.17] — 2026-08-18
+
+### Fixed
+- Season-pack searches reject single-episode titles (`S10` pack no longer grabs `S13E02`). The release must cover the wanted season.
+
 ## [0.1.16] — 2026-08-18
 
 ### Fixed
