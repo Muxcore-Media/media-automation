@@ -16,13 +16,12 @@ func (m *Module) maybeMergeMagnet(ctx context.Context, itemID string, loop int, 
 	if best == nil {
 		return ""
 	}
-	url := strings.TrimSpace(best.DownloadURL)
+	_ = ctx
+	_ = itemID
+	_ = loop
+	url := magnetURLForRelease(results, best)
 	id := parseMagnetIdentity(url)
 	if id.InfoHash == "" && id.InfoHashV2 == "" {
-		return url
-	}
-	combine := loop >= 2 || m.keptSavePath(ctx, itemID, id) != ""
-	if !combine {
 		return url
 	}
 	urls := make([]string, 0, len(results))
@@ -36,6 +35,33 @@ func (m *Module) maybeMergeMagnet(ctx context.Context, itemID string, loop int, 
 		return merged
 	}
 	return url
+}
+
+func magnetURLForRelease(results []scoredRelease, best *scoredRelease) string {
+	if best == nil {
+		return ""
+	}
+	url := strings.TrimSpace(best.DownloadURL)
+	if isMagnetURL(url) {
+		return url
+	}
+	for i := range results {
+		cand := strings.TrimSpace(results[i].DownloadURL)
+		if !isMagnetURL(cand) {
+			continue
+		}
+		if best.GUID != "" && results[i].GUID == best.GUID {
+			return cand
+		}
+		if results[i].Title == best.Title && best.Size > 0 && results[i].Size == best.Size {
+			return cand
+		}
+	}
+	return url
+}
+
+func isMagnetURL(u string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(u)), "magnet:")
 }
 
 func (m *Module) dispatchSavePath(ctx context.Context, itemID string, downloadURL, guid string) string {
