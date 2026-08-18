@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.19] — 2026-08-18
+
+### Fixed
+- RSS search no longer waits for a full `syncWantedFromLibraries`. Vault sat 10–15 minutes with zero dispatches after restart while TV ListMissing ran. Library sync now runs in the background (one at a time). Cycle start/finish is Info.
+
 ## [0.1.18] — 2026-08-18
 
 ### Fixed

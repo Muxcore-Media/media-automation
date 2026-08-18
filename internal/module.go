@@ -59,6 +59,7 @@ type Module struct {
 	indexerHoldUntil        time.Time
 	searchGap               time.Duration
 	wantedSearchLimit       int
+	librarySyncMu           sync.Mutex
 
 	indexerConns   map[string]*grpc.ClientConn
 	indexerClients map[string]indexerv1.IndexerServiceClient
@@ -141,7 +142,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.18",
+		Version:        "0.1.19",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1212,11 +1213,26 @@ func (m *Module) rssSyncLoop() {
 }
 
 func (m *Module) rssSync() {
-	slog.Debug("rss sync cycle starting")
-	m.retryImportFailed(context.Background())
-	m.syncWantedFromLibraries(context.Background())
-	m.reapStalledDownloads(context.Background(), time.Now().UTC())
+	start := time.Now()
+	slog.Info("rss cycle starting")
+	ctx := context.Background()
+	m.retryImportFailed(ctx)
+	m.reapStalledDownloads(ctx, time.Now().UTC())
 	m.searchQueuedItems()
+	slog.Info("rss search finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
+	go m.syncWantedFromLibrariesBackground()
+}
+
+func (m *Module) syncWantedFromLibrariesBackground() {
+	if !m.librarySyncMu.TryLock() {
+		slog.Info("wanted library sync already running; skip")
+		return
+	}
+	defer m.librarySyncMu.Unlock()
+	start := time.Now()
+	slog.Info("wanted library sync starting")
+	m.syncWantedFromLibraries(context.Background())
+	slog.Info("wanted library sync finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
 }
 
 func (m *Module) indexerOnHold() bool {
