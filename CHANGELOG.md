@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.12] — 2026-08-18
+
+### Fixed
+- Do not `AddTorrent` again when the same GUID, magnet hash, URL, or title is already `sent`. Season packs matching many episode wanted rows (Breaking Bad remux, Paddington S01) were being dispatched once per episode.
+
+## [0.1.11] — 2026-08-18
+
+### Added
+- Collect v1 (`btih`) and v2 (`btmh`) magnet hashes on every grab; merge same-hash magnets (union trackers) on stall loop 2+ and when a kept partial already exists.
+- Setting `keep_stalled_partials` (default off): leave stalled/failed torrent data on disk, resume matching hashes from that save path, and delete leftover `partials/{item}/` dirs after a successful import.
+
 ## [0.1.10] — 2026-08-18
 
 ### Fixed

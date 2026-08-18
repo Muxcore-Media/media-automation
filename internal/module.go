@@ -55,6 +55,7 @@ type Module struct {
 	stallTimeoutMinutes     int
 	stallAutoMode           bool
 	stallLoopMinutes        []int
+	keepStalledPartials     bool
 	indexerHoldUntil        time.Time
 	searchGap               time.Duration
 	wantedSearchLimit       int
@@ -129,6 +130,10 @@ func NewModule(cfg Config) *Module {
 			m.stallLoopMinutes = loops
 		}
 	}
+	if v := os.Getenv("AUTOMATION_KEEP_STALLED_PARTIALS"); v != "" {
+		lv := strings.ToLower(strings.TrimSpace(v))
+		m.keepStalledPartials = lv == "true" || lv == "1" || lv == "on"
+	}
 	return m
 }
 
@@ -136,7 +141,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.10",
+		Version:        "0.1.12",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -623,6 +628,7 @@ func (m *Module) subscribeToMediaEvents() {
 		contracts.EventMovieFileAdded,
 		contracts.EventTVEpisodeFileAdded,
 		contracts.EventFileImported,
+		contracts.EventDownloadStarted,
 		contracts.EventDownloadCompleted,
 		contracts.EventDownloadFailed,
 	}
@@ -679,7 +685,7 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.OriginalPath != "" {
 				slog.Info("file imported event received", "title", payload.Title, "path", payload.DestinationPath)
 			}
-		case contracts.EventDownloadCompleted, contracts.EventDownloadFailed:
+		case contracts.EventDownloadStarted, contracts.EventDownloadCompleted, contracts.EventDownloadFailed:
 			var payload contracts.DownloadEventPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 				slog.Warn("download event unmarshal", "type", eventType, "error", err)
@@ -722,6 +728,11 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	if eventType == contracts.EventDownloadStarted {
+		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files))
+		return
+	}
 
 	if eventType == contracts.EventDownloadFailed {
 		if histStatus != "sent" && histStatus != "stalled" {
@@ -772,7 +783,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 
 	targets := importTargets(payload.SavePath, payload.Files)
 	// Import can take a long time (large copies); never block the event loop.
-	go func(histID, downloadID, now string, targets []string) {
+	go func(histID, downloadID, now, wantedID, savePath string, targets []string) {
 		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		for _, path := range targets {
@@ -795,7 +806,8 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		); err != nil {
 			slog.Warn("mark download completed", "id", histID, "error", err)
 		}
-	}(histID, payload.ID, now, targets)
+		m.cleanupWantedPartials(wantedID, savePath)
+	}(histID, payload.ID, now, wantedID, payload.SavePath, targets)
 }
 
 // importTargets prefers completed torrent files so ImportPath does not rescan the
@@ -1336,13 +1348,16 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 			p := m.loadProfileDecision(ctx, profileID)
 			acquired := parseFlexibleTime(fileAcquiredAt)
 			now := time.Now().UTC()
-			if best.DownloadURL != "" &&
+			grabURL := m.maybeMergeMagnet(ctx, itemID, loop, results, best)
+			if grabURL != "" && m.releaseInFlight(ctx, best.GUID, grabURL, best.Title) {
+				slog.Info("skip dispatch: release already in flight", "title", best.Title, "item", itemID, "guid", best.GUID)
+			} else if grabURL != "" &&
 				decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
 				m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, seriesID, now) {
 				_, err := m.Dispatch(ctx, &automationv1.DispatchRequest{
 					Guid:             best.GUID,
 					Title:            best.Title,
-					DownloadUrl:      best.DownloadURL,
+					DownloadUrl:      grabURL,
 					DownloadProtocol: best.DownloadProtocol,
 					Size:             best.Size,
 					Score:            int32(best.Score),
@@ -1908,6 +1923,14 @@ func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bo
 }
 
 func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest) (*automationv1.DispatchResponse, error) {
+	if existing := m.inFlightDownloadID(ctx, req.GetGuid(), req.GetDownloadUrl(), req.GetTitle()); existing != "" {
+		slog.Info("skip duplicate in-flight release", "title", req.GetTitle(), "guid", req.GetGuid(), "id", existing)
+		return &automationv1.DispatchResponse{
+			DownloadId: existing,
+			Status:     "sent",
+		}, nil
+	}
+
 	if err := m.ensureDownloader(ctx); err != nil {
 		return nil, fmt.Errorf("no downloader available: %w", err)
 	}
@@ -1924,8 +1947,10 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	// ImportPath can run for minutes and must not cancel magnet handoff.
 	addCtx, addCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer addCancel()
+	savePath := m.dispatchSavePath(context.Background(), req.GetItemId(), req.GetDownloadUrl(), req.GetGuid())
 	addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
 		TorrentUrl: req.GetDownloadUrl(),
+		SavePath:   savePath,
 		Category:   req.GetItemType(),
 	})
 	if err != nil {
@@ -1936,14 +1961,8 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	histID := fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano())
 	if db != nil {
 		loop := m.attemptLoop(context.Background(), req.GetItemId())
-		if _, err := db.ExecContext(context.Background(),
-			`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?, 0, ?)`,
-			histID,
-			req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
-			req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
-			now, now, addResp.GetTorrentId(), loop, now,
-		); err != nil {
+		if err := m.insertDownloadHistory(context.Background(), db, histID, req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
+			req.GetSize(), int64(req.GetScore()), req.GetDownloadUrl(), req.GetDownloadProtocol(), addResp.GetTorrentId(), savePath, loop, now); err != nil {
 			slog.Warn("insert download_history", "error", err)
 		}
 	}

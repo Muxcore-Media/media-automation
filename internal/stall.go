@@ -60,6 +60,10 @@ func (m *Module) migrateStallTables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE download_history ADD COLUMN attempt_loop INTEGER DEFAULT 1`,
 		`ALTER TABLE download_history ADD COLUMN last_bytes INTEGER DEFAULT 0`,
 		`ALTER TABLE download_history ADD COLUMN last_progress_at TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN infohash TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN infohash_v2 TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN save_path TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN files_fingerprint TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate stall columns: %w", err)
@@ -189,6 +193,46 @@ func (m *Module) pickNextRelease(ctx context.Context, itemID string, loop int, r
 		return r
 	}
 	return nil
+}
+
+// inFlightDownloadID returns the downloader id of a torrent already in status=sent
+// that matches this GUID, magnet hash, URL, or exact title. Season packs matching
+// many episode wanted rows must not AddTorrent again.
+func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, title string) string {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return ""
+	}
+	key := releaseAttemptKey(guid, downloadURL)
+	id := parseMagnetIdentity(downloadURL)
+	title = strings.TrimSpace(title)
+	if key == "" && id.InfoHash == "" && id.InfoHashV2 == "" && title == "" {
+		return ""
+	}
+	var downloadID string
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(download_id, '') FROM download_history
+		WHERE status = 'sent'
+		  AND (
+		    (? != '' AND guid = ?)
+		    OR (? != '' AND COALESCE(download_url, '') = ?)
+		    OR (? != '' AND lower(COALESCE(infohash, '')) = ?)
+		    OR (? != '' AND lower(COALESCE(infohash_v2, '')) = ?)
+		    OR (? != '' AND title = ?)
+		  )
+		ORDER BY sent_at ASC
+		LIMIT 1
+	`, key, key, downloadURL, downloadURL, id.InfoHash, id.InfoHash, id.InfoHashV2, id.InfoHashV2, title, title).Scan(&downloadID)
+	if err != nil {
+		return ""
+	}
+	return downloadID
+}
+
+func (m *Module) releaseInFlight(ctx context.Context, guid, downloadURL, title string) bool {
+	return m.inFlightDownloadID(ctx, guid, downloadURL, title) != ""
 }
 
 func (m *Module) advanceAttemptLoop(ctx context.Context, itemID string, loop int) int {
@@ -348,9 +392,16 @@ func (m *Module) removeInflightTorrent(ctx context.Context, downloadID string) {
 	}
 	rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, err := client.RemoveTorrent(rmCtx, &cdlv1.RemoveTorrentRequest{TorrentId: downloadID, DeleteFiles: true}); err != nil {
+	deleteFiles := !m.keepStalledPartialsLocked()
+	if _, err := client.RemoveTorrent(rmCtx, &cdlv1.RemoveTorrentRequest{TorrentId: downloadID, DeleteFiles: deleteFiles}); err != nil {
 		slog.Debug("remove stalled torrent", "id", downloadID, "error", err)
 	}
+}
+
+func (m *Module) keepStalledPartialsLocked() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.keepStalledPartials
 }
 
 type torrentSnap struct {

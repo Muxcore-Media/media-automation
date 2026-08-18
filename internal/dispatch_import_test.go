@@ -15,16 +15,19 @@ import (
 // fakeDownloaderClient records AddTorrent and returns a fixed torrent id (offline).
 type fakeDownloaderClient struct {
 	cdlv1.DownloaderServiceClient
-	torrentID string
-	calls     int
-	lastURL   string
-	torrents  map[string]*cdlv1.TorrentInfo
-	removed   []string
+	torrentID      string
+	calls          int
+	lastURL        string
+	lastSavePath   string
+	torrents       map[string]*cdlv1.TorrentInfo
+	removed        []string
+	deleteFiles    []bool
 }
 
 func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorrentRequest, opts ...grpc.CallOption) (*cdlv1.AddTorrentResponse, error) {
 	f.calls++
 	f.lastURL = in.GetTorrentUrl()
+	f.lastSavePath = in.GetSavePath()
 	id := f.torrentID
 	if id == "" {
 		id = "torrent-fixture-1"
@@ -45,6 +48,7 @@ func (f *fakeDownloaderClient) GetTorrent(ctx context.Context, in *cdlv1.GetTorr
 
 func (f *fakeDownloaderClient) RemoveTorrent(ctx context.Context, in *cdlv1.RemoveTorrentRequest, opts ...grpc.CallOption) (*cdlv1.RemoveTorrentResponse, error) {
 	f.removed = append(f.removed, in.GetTorrentId())
+	f.deleteFiles = append(f.deleteFiles, in.GetDeleteFiles())
 	if f.torrents != nil {
 		delete(f.torrents, in.GetTorrentId())
 	}
