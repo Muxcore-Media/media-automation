@@ -76,6 +76,21 @@ func packSeasonsCovered(title string) (lo, hi int, ok bool) {
 	return 0, 0, false
 }
 
+// parseSingleEpisode returns the first SxxExx in title. Episode ranges and
+// season packs are not a single episode; callers should check packSeasonsCovered first.
+func parseSingleEpisode(title string) (season, episode int, ok bool) {
+	m := reSingleEpisode.FindStringSubmatch(title)
+	if len(m) < 3 {
+		return 0, 0, false
+	}
+	s, errS := strconv.Atoi(m[1])
+	e, errE := strconv.Atoi(m[2])
+	if errS != nil || errE != nil || s < 1 || e < 1 {
+		return 0, 0, false
+	}
+	return s, e, true
+}
+
 type packSpan struct{ lo, hi int }
 
 func packCoversSeason(title string, season int) bool {
