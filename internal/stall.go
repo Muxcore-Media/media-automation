@@ -195,9 +195,10 @@ func (m *Module) pickNextRelease(ctx context.Context, itemID string, loop int, r
 	return nil
 }
 
-// inFlightDownloadID returns the downloader id of a torrent already in status=sent
-// that matches this GUID, magnet hash, URL, or exact title. Season packs matching
-// many episode wanted rows must not AddTorrent again.
+// inFlightDownloadID returns the downloader id of a torrent already sent or
+// completed that matches this GUID, magnet hash, URL, or exact title. Season
+// packs matching many episode wanted rows must not AddTorrent again — including
+// after the first copy finishes, when status is no longer sent.
 func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, title string) string {
 	m.mu.RLock()
 	db := m.db
@@ -214,7 +215,7 @@ func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, titl
 	var downloadID string
 	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(download_id, '') FROM download_history
-		WHERE status = 'sent'
+		WHERE status IN ('sent', 'completed')
 		  AND (
 		    (? != '' AND guid = ?)
 		    OR (? != '' AND COALESCE(download_url, '') = ?)
@@ -222,11 +223,14 @@ func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, titl
 		    OR (? != '' AND lower(COALESCE(infohash_v2, '')) = ?)
 		    OR (? != '' AND title = ?)
 		  )
-		ORDER BY sent_at ASC
+		ORDER BY CASE status WHEN 'sent' THEN 0 ELSE 1 END, COALESCE(sent_at, created_at) ASC
 		LIMIT 1
 	`, key, key, downloadURL, downloadURL, id.InfoHash, id.InfoHash, id.InfoHashV2, id.InfoHashV2, title, title).Scan(&downloadID)
 	if err != nil {
 		return ""
+	}
+	if downloadID == "" {
+		return "already-grabbed"
 	}
 	return downloadID
 }

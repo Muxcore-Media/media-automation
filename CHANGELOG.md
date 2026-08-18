@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.13] — 2026-08-18
+
+### Fixed
+- Treat **completed** grabs as already taken, not only `sent`. After a season pack finishes, sibling episode wanted rows were AddTorrent'ing the same release again (King of the Hill S15).
+
 ## [0.1.12] — 2026-08-18
 
 ### Fixed
