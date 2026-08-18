@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.33] — 2026-08-18
+
+### Fixed
+- ImportPath never double-joins `save_path` onto a torrent file that already includes that prefix. `download.started` / `completed` persist the resulting absolute file list as `import_paths`.
+
 ## [0.1.32] — 2026-08-18
 
 ### Fixed

@@ -348,3 +348,42 @@ func TestImportTargetsPrefersCompletedFiles(t *testing.T) {
 		t.Fatalf("fallback got %v", fallback)
 	}
 }
+
+func TestJoinSaveAndRelPathNoDoubleJoin(t *testing.T) {
+	t.Parallel()
+	got := joinSaveAndRelPath("/data/downloads/partials/item1", "partials/item1/Show.mkv")
+	if got != "/data/downloads/partials/item1/Show.mkv" {
+		t.Fatalf("prefix file: %q", got)
+	}
+	got = joinSaveAndRelPath("/downloads/Show", "Show/S01E01.mkv")
+	if got != "/downloads/Show/S01E01.mkv" {
+		t.Fatalf("dir name prefix: %q", got)
+	}
+	targets := importTargets("partials/item1", []contracts.DownloadEventFile{{Path: "partials/item1/file.mkv"}})
+	if len(targets) != 1 || targets[0] != "partials/item1/file.mkv" {
+		t.Fatalf("relative save+prefix: %v", targets)
+	}
+}
+
+func TestDownloadStartedPersistsAbsoluteImportPaths(t *testing.T) {
+	m := newTestModule(t)
+	insertHistoryWithDownloadID(t, m, "dl_paths", "tor-paths")
+	m.handleDownloadLifecycleEvent(context.Background(), contracts.EventDownloadStarted, contracts.DownloadEventPayload{
+		ID:       "tor-paths",
+		InfoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SavePath: "/data/downloads/partials/item1",
+		Files:    []contracts.DownloadEventFile{{Path: "partials/item1/Show.mkv", Size: 10}},
+	})
+	var stored string
+	m.mu.RLock()
+	err := m.db.QueryRowContext(context.Background(),
+		`SELECT COALESCE(import_paths,'') FROM download_history WHERE id = ?`, "dl_paths",
+	).Scan(&stored)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "/data/downloads/partials/item1/Show.mkv" {
+		t.Fatalf("import_paths=%q", stored)
+	}
+}

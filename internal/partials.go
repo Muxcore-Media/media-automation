@@ -132,7 +132,7 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 		return
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, COALESCE(download_id, ''), COALESCE(save_path, ''), COALESCE(wanted_item_id, '')
+		SELECT id, COALESCE(download_id, ''), COALESCE(save_path, ''), COALESCE(wanted_item_id, ''), COALESCE(import_paths, '')
 		FROM download_history
 		WHERE status = 'import_failed'
 		LIMIT 20
@@ -141,12 +141,12 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 		return
 	}
 	type failed struct {
-		id, downloadID, savePath, wantedID string
+		id, downloadID, savePath, wantedID, importPaths string
 	}
 	var recs []failed
 	for rows.Next() {
 		var r failed
-		if err := rows.Scan(&r.id, &r.downloadID, &r.savePath, &r.wantedID); err != nil {
+		if err := rows.Scan(&r.id, &r.downloadID, &r.savePath, &r.wantedID, &r.importPaths); err != nil {
 			continue
 		}
 		recs = append(recs, r)
@@ -165,19 +165,33 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, rec := range recs {
-		path := resolveExistingImportPath(rec.savePath)
-		if path == "" {
-			continue
+		paths := decodeImportPaths(rec.importPaths)
+		if len(paths) == 0 {
+			paths = []string{rec.savePath}
 		}
-		impCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
-		cancel()
-		if err != nil {
-			slog.Warn("retry ImportPath failed", "id", rec.id, "path", path, "error", err)
-			continue
+		var imported bool
+		var used string
+		for _, raw := range paths {
+			path := resolveExistingImportPath(raw)
+			if path == "" {
+				continue
+			}
+			impCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+			cancel()
+			if err != nil {
+				slog.Warn("retry ImportPath failed", "id", rec.id, "path", path, "error", err)
+				continue
+			}
+			if resp.GetFilesImported() == 0 && resp.GetFilesFound() == 0 {
+				slog.Debug("retry ImportPath found nothing", "id", rec.id, "path", path)
+				continue
+			}
+			imported = true
+			used = path
+			break
 		}
-		if resp.GetFilesImported() == 0 && resp.GetFilesFound() == 0 {
-			slog.Debug("retry ImportPath found nothing", "id", rec.id, "path", path)
+		if !imported {
 			continue
 		}
 		if _, uerr := db.ExecContext(ctx,
@@ -187,8 +201,8 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 			slog.Warn("mark retried import completed", "id", rec.id, "error", uerr)
 			continue
 		}
-		m.cleanupWantedPartials(rec.wantedID, path)
-		slog.Info("retried import succeeded", "id", rec.id, "title_id", rec.wantedID, "imported", resp.GetFilesImported(), "skipped", resp.GetFilesSkipped())
+		m.cleanupWantedPartials(rec.wantedID, used)
+		slog.Info("retried import succeeded", "id", rec.id, "title_id", rec.wantedID, "path", used)
 	}
 }
 
@@ -221,7 +235,7 @@ func (m *Module) keptSavePath(ctx context.Context, itemID string, id magnetIdent
 	return strings.TrimSpace(path)
 }
 
-func (m *Module) recordDownloadIdentity(ctx context.Context, downloadID, infohash, savePath, fingerprint string) {
+func (m *Module) recordDownloadIdentity(ctx context.Context, downloadID, infohash, savePath, fingerprint, importPaths string) {
 	if downloadID == "" {
 		return
 	}
@@ -236,9 +250,10 @@ func (m *Module) recordDownloadIdentity(ctx context.Context, downloadID, infohas
 		UPDATE download_history SET
 			infohash = CASE WHEN ? != '' THEN ? ELSE infohash END,
 			save_path = CASE WHEN ? != '' THEN ? ELSE save_path END,
-			files_fingerprint = CASE WHEN ? != '' THEN ? ELSE files_fingerprint END
+			files_fingerprint = CASE WHEN ? != '' THEN ? ELSE files_fingerprint END,
+			import_paths = CASE WHEN ? != '' THEN ? ELSE import_paths END
 		WHERE download_id = ?
-	`, infohash, infohash, savePath, savePath, fingerprint, fingerprint, downloadID); err != nil {
+	`, infohash, infohash, savePath, savePath, fingerprint, fingerprint, importPaths, importPaths, downloadID); err != nil {
 		slog.Debug("record download identity", "download_id", downloadID, "error", err)
 	}
 }
