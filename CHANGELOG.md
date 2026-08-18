@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.21] — 2026-08-18
+
+### Fixed
+- Season-0 episode placeholders (`S00E01` dummy rows) never search; a SHIELD dummy had dispatched a S05 pack. Episode-grain picks also reject season-pack titles (`S05` without `E`).
+
 ## [0.1.20] — 2026-08-18
 
 ### Fixed

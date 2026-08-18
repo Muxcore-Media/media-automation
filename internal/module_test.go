@@ -628,6 +628,10 @@ func TestScoreTVReleaseBoost(t *testing.T) {
 	if wrongEp >= 0 {
 		t.Fatalf("single episode must not satisfy a season pack search, boost=%d", wrongEp)
 	}
+	epVsPack := scoreTVReleaseBoost("Marvel's Agents of S H I E L D 2013 S05 1080p BDrip x265", 0, 1, 0, false, "standard")
+	if epVsPack >= 0 {
+		t.Fatalf("episode wanted row must not take a season pack, boost=%d", epVsPack)
+	}
 	anime := scoreTVReleaseBoost("Anime - 150 [1080p]", 0, 0, 150, false, "anime")
 	if anime < 30 {
 		t.Fatalf("anime absolute boost too low: %d", anime)
