@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.31] — 2026-08-18
+
+### Fixed
+- Same-infohash search hits merge trackers on the first grab (not only attempt loop 2), and an HTTP proxy URL is swapped for a magnet sibling so history stores `infohash` immediately.
+
 ## [0.1.30] — 2026-08-18
 
 ### Fixed

@@ -488,8 +488,76 @@ func TestMaybeMergeMagnetLoop2(t *testing.T) {
 		t.Fatalf("should not merge B: %s", got)
 	}
 	loop1 := m.maybeMergeMagnet(context.Background(), "mv_x", 1, results, &results[0])
-	if strings.Contains(loop1, "udp://c.example:80/announce") {
-		t.Fatalf("loop 1 should not merge without kept partial: %s", loop1)
+	if !strings.Contains(loop1, "udp://c.example:80/announce") {
+		t.Fatalf("loop 1 should merge same-hash trackers: %s", loop1)
+	}
+}
+
+func TestMagnetURLForReleasePrefersSiblingMagnet(t *testing.T) {
+	t.Parallel()
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	httpURL := "http://127.0.0.1:9696/2/download?apikey=x"
+	magnet := "magnet:?xt=urn:btih:" + hash
+	results := []scoredRelease{
+		{GUID: "same", Title: "Show.S01E01", Size: 100, DownloadURL: httpURL, Score: 200},
+		{GUID: "same", Title: "Show.S01E01", Size: 100, DownloadURL: magnet, Score: 180},
+	}
+	got := magnetURLForRelease(results, &results[0])
+	if got != magnet {
+		t.Fatalf("got %q want magnet", got)
+	}
+}
+
+func TestSameHashHitsShareSavePathAndMergedTrackers(t *testing.T) {
+	m := newTestModule(t)
+	m.mu.Lock()
+	m.keepStalledPartials = true
+	m.downloadDir = "/data/downloads"
+	m.mu.Unlock()
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	results := []scoredRelease{
+		{GUID: "a", Title: "Show", DownloadURL: "magnet:?xt=urn:btih:" + hash + "&tr=udp://a.example:80/announce", Score: 200},
+		{GUID: "c", Title: "Show", DownloadURL: "magnet:?xt=urn:btih:" + hash + "&tr=udp://c.example:80/announce", Score: 100},
+	}
+	grab := m.maybeMergeMagnet(context.Background(), "tv_1", 1, results, &results[0])
+	if !strings.Contains(grab, "udp://a.example:80/announce") || !strings.Contains(grab, "udp://c.example:80/announce") {
+		t.Fatalf("merged trackers: %s", grab)
+	}
+	path := m.dispatchSavePath(context.Background(), "tv_1", grab, results[0].GUID)
+	want := "/data/downloads/partials/tv_1/btih_" + hash
+	if path != want {
+		t.Fatalf("save path %q want %q", path, want)
+	}
+	fake := &fakeDownloaderClient{torrentID: "tor-merge"}
+	m.downloaderClient = fake
+	_, err := m.Dispatch(context.Background(), &autov1.DispatchRequest{
+		Guid:             "a",
+		Title:            "Show",
+		DownloadUrl:      grab,
+		DownloadProtocol: "torrent",
+		ItemType:         "tv",
+		ItemId:           "tv_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastSavePath != want {
+		t.Fatalf("dispatch save %q want %q", fake.lastSavePath, want)
+	}
+	if !strings.Contains(fake.lastURL, "udp://a.example:80/announce") || !strings.Contains(fake.lastURL, "udp://c.example:80/announce") {
+		t.Fatalf("dispatch url %s", fake.lastURL)
+	}
+	var infohash string
+	m.mu.RLock()
+	err = m.db.QueryRowContext(context.Background(),
+		`SELECT COALESCE(infohash,'') FROM download_history WHERE download_id = ?`, "tor-merge",
+	).Scan(&infohash)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infohash != hash {
+		t.Fatalf("infohash %q want %q", infohash, hash)
 	}
 }
 
