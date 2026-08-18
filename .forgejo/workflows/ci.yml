@@ -1,0 +1,42 @@
+name: CI
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  GOPRIVATE: github.com/Muxcore-Media/*
+  GOPROXY: https://proxy.golang.org,direct
+
+jobs:
+  test:
+    runs-on: native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: false
+      - name: Fetch MuxCore modules from Forgejo origin
+        run: |
+          git config --global url."https://git.zem.systems/muxcore/".insteadOf "https://github.com/Muxcore-Media/"
+      - run: go test -count=1 -timeout 10m ./...
+
+  build:
+    runs-on: native
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: false
+      - name: Fetch MuxCore modules from Forgejo origin
+        run: |
+          git config --global url."https://git.zem.systems/muxcore/".insteadOf "https://github.com/Muxcore-Media/"
+      - run: |
+          if [ -d cmd/module ]; then go build -o /dev/null ./cmd/module
+          elif [ -d cmd ]; then go build -o /dev/null ./cmd/...
+          else go build -o /dev/null ./...
+          fi
+          go vet ./...
