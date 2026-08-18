@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.23] — 2026-08-18
+
+### Fixed
+- Multi-season titles that list seasons with spaces instead of a hyphen (`S01   S04`) are treated as a pack spanning those seasons, so sibling wanted rows skip search.
+
 ## [0.1.22] — 2026-08-18
 
 ### Fixed

@@ -40,6 +40,27 @@ func packSeasonsCovered(title string) (lo, hi int, ok bool) {
 	if reSingleEpisode.MatchString(title) {
 		return 0, 0, false
 	}
+	if matches := reSeasonInTitle.FindAllStringSubmatch(title, -1); len(matches) >= 2 {
+		lo, hi := 0, 0
+		for _, m := range matches {
+			if len(m) < 2 {
+				continue
+			}
+			s, err := strconv.Atoi(m[1])
+			if err != nil || s < 1 {
+				continue
+			}
+			if lo == 0 || s < lo {
+				lo = s
+			}
+			if s > hi {
+				hi = s
+			}
+		}
+		if lo > 0 && hi >= lo {
+			return lo, hi, true
+		}
+	}
 	if m := reSeasonInTitle.FindStringSubmatch(title); len(m) >= 2 {
 		s, err := strconv.Atoi(m[1])
 		if err == nil && s > 0 {
