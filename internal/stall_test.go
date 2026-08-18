@@ -619,6 +619,38 @@ func TestDownloadStartedRecordsIdentity(t *testing.T) {
 	}
 }
 
+func TestDownloadStartedPersistsRenamedBtihPath(t *testing.T) {
+	m := newTestModule(t)
+	root := t.TempDir()
+	pending := filepath.Join(root, "partials", "item-1", "pending_https_x")
+	dest := filepath.Join(root, "partials", "item-1", "btih_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+	insertHistoryWithDownloadID(t, m, "dl_rename", "tor-rename")
+	m.handleDownloadLifecycleEvent(context.Background(), contracts.EventDownloadStarted, contracts.DownloadEventPayload{
+		ID:       "tor-rename",
+		InfoHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		SavePath: pending,
+	})
+	var hash, path string
+	m.mu.RLock()
+	err := m.db.QueryRowContext(context.Background(),
+		`SELECT COALESCE(infohash,''), COALESCE(save_path,'') FROM download_history WHERE id = ?`,
+		"dl_rename",
+	).Scan(&hash, &path)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("hash %q", hash)
+	}
+	if path != dest {
+		t.Fatalf("path %q want %q", path, dest)
+	}
+}
+
 func TestCleanupWantedPartials(t *testing.T) {
 	m := newTestModule(t)
 	root := t.TempDir()

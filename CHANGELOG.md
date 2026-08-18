@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.35] — 2026-08-18
+
+### Fixed
+- `download.started` persists `btih_{infohash}` when the downloader has already renamed a `pending_*` partial dir, so later same-hash grabs reuse the short identity.
+
 ## [0.1.34] — 2026-08-18
 
 ### Fixed

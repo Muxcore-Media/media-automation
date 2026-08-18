@@ -229,6 +229,27 @@ func (m *Module) relocateStrayCwdPartials() {
 	}
 }
 
+func canonicalPartialSavePath(savePath, infoHash string) string {
+	savePath = strings.TrimSpace(savePath)
+	infoHash = strings.ToLower(strings.TrimSpace(infoHash))
+	if savePath == "" || infoHash == "" {
+		return savePath
+	}
+	clean := filepath.Clean(savePath)
+	base := filepath.Base(clean)
+	if !strings.HasPrefix(base, "pending_") {
+		return savePath
+	}
+	if !strings.Contains(filepath.ToSlash(clean), "/partials/") {
+		return savePath
+	}
+	dest := filepath.Join(filepath.Dir(clean), "btih_"+infoHash)
+	if _, err := os.Stat(dest); err == nil {
+		return dest
+	}
+	return savePath
+}
+
 func resolveExistingImportPath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
