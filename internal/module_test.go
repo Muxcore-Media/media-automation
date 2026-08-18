@@ -629,3 +629,25 @@ func TestScoreTVReleaseBoost(t *testing.T) {
 		t.Fatalf("anime absolute boost too low: %d", anime)
 	}
 }
+
+func TestSkipWantedSearch(t *testing.T) {
+	now := time.Now()
+	interval := 15 * time.Minute
+	if skipWantedSearch("", true, true, interval, now) {
+		t.Fatal("never-searched missing item should run")
+	}
+	recent := now.Add(-2 * time.Minute).UTC().Format(time.RFC3339)
+	if !skipWantedSearch(recent, true, true, interval, now) {
+		t.Fatal("recently searched missing item should wait")
+	}
+	stale := now.Add(-20 * time.Minute).UTC().Format(time.RFC3339)
+	if skipWantedSearch(stale, true, true, interval, now) {
+		t.Fatal("stale missing item should search")
+	}
+	if !skipWantedSearch(recent, false, true, interval, now) {
+		t.Fatal("upgrade search should wait 6h")
+	}
+	if !skipWantedSearch("", false, false, interval, now) {
+		t.Fatal("upgrades disabled should skip owned items")
+	}
+}
