@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.36] — 2026-08-18
+
+### Added
+- `SearchNow` RPC and `search_now` setting run one wanted-search pass immediately (ignores the RSS last-searched gap) so a deploy can be verified without waiting 15 minutes.
+
 ## [0.1.35] — 2026-08-18
 
 ### Fixed

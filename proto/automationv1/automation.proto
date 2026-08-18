@@ -8,6 +8,7 @@ service AutomationService {
   rpc AddToQueue(AddToQueueRequest) returns (AddToQueueResponse);
   rpc GetQueue(GetQueueRequest) returns (GetQueueResponse);
   rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
+  rpc SearchNow(SearchNowRequest) returns (SearchNowResponse);
 }
 
 message SearchItemRequest {
@@ -118,6 +119,13 @@ message GetHistoryResponse {
   int32 total = 2;
   int32 page = 3;
   int32 page_size = 4;
+}
+
+message SearchNowRequest {}
+
+message SearchNowResponse {
+  bool started = 1;
+  string message = 2;
 }
 
 message DownloadRecord {

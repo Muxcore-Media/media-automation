@@ -62,6 +62,7 @@ type Module struct {
 	searchGap               time.Duration
 	wantedSearchLimit       int
 	librarySyncMu           sync.Mutex
+	searchCycleMu           sync.Mutex
 
 	indexerConns   map[string]*grpc.ClientConn
 	indexerClients map[string]indexerv1.IndexerServiceClient
@@ -155,7 +156,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.35",
+		Version:        "0.1.36",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1400,17 +1401,49 @@ func (m *Module) rssSyncLoop() {
 }
 
 func (m *Module) rssSync() {
+	if !m.searchCycleMu.TryLock() {
+		slog.Info("rss cycle already running; skip")
+		return
+	}
+	defer m.searchCycleMu.Unlock()
 	start := time.Now()
 	slog.Info("rss cycle starting")
 	ctx := context.Background()
 	m.pruneSeasonZeroEpisodeDummies(ctx)
 	m.retryImportFailed(ctx)
-	m.searchQueuedItems()
+	m.searchQueuedItems(false)
 	slog.Info("rss search finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
 	go m.syncWantedFromLibrariesBackground()
 	reapCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	m.reapStalledDownloads(reapCtx, time.Now().UTC())
 	cancel()
+}
+
+func (m *Module) runSearchNow() bool {
+	if !m.searchCycleMu.TryLock() {
+		slog.Info("search-now skipped: cycle already running")
+		return false
+	}
+	defer m.searchCycleMu.Unlock()
+	start := time.Now()
+	slog.Info("search-now starting")
+	ctx := context.Background()
+	m.pruneSeasonZeroEpisodeDummies(ctx)
+	m.retryImportFailed(ctx)
+	m.searchQueuedItems(true)
+	slog.Info("search-now finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return true
+}
+
+func (m *Module) SearchNow(ctx context.Context, req *automationv1.SearchNowRequest) (*automationv1.SearchNowResponse, error) {
+	_ = ctx
+	_ = req
+	if !m.searchCycleMu.TryLock() {
+		return &automationv1.SearchNowResponse{Started: false, Message: "search cycle already running"}, nil
+	}
+	m.searchCycleMu.Unlock()
+	go m.runSearchNow()
+	return &automationv1.SearchNowResponse{Started: true, Message: "wanted search started"}, nil
 }
 
 func (m *Module) syncWantedFromLibrariesBackground() {
@@ -1443,7 +1476,7 @@ func (m *Module) holdIndexer(d time.Duration) {
 	m.mu.Unlock()
 }
 
-func (m *Module) searchQueuedItems() {
+func (m *Module) searchQueuedItems(force bool) {
 	if m.indexerOnHold() {
 		m.mu.RLock()
 		until := m.indexerHoldUntil
@@ -1495,7 +1528,10 @@ func (m *Module) searchQueuedItems() {
 			continue
 		}
 		missing := r.missing != 0
-		if skipWantedSearch(r.lastSearched, missing, upgrades, interval, now) {
+		if !missing && !upgrades {
+			continue
+		}
+		if !force && skipWantedSearch(r.lastSearched, missing, upgrades, interval, now) {
 			nRecent++
 			continue
 		}

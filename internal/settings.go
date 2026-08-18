@@ -43,6 +43,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Group:       "Automation",
 		},
 		{
+			Key:         "search_now",
+			Label:       "Search now",
+			Type:        contracts.SettingTypeBool,
+			Default:     "false",
+			Value:       "false",
+			Description: "Set true to run one wanted-search pass immediately (ignores the RSS interval / last-searched gap). Does not stay on.",
+			Group:       "Automation",
+		},
+		{
 			Key:         "rss_sync_minutes",
 			Label:       "RSS Sync Interval (minutes)",
 			Type:        contracts.SettingTypeInt,
@@ -119,6 +128,11 @@ func (m *Module) updateSetting(key, value string) error {
 		m.mu.Lock()
 		m.enableAutomaticUpgrades = value == "true" || value == "1" || value == "on"
 		m.mu.Unlock()
+		return nil
+	case "search_now":
+		if value == "true" || value == "1" || value == "on" {
+			go m.runSearchNow()
+		}
 		return nil
 	case "rss_sync_minutes":
 		n, err := strconv.Atoi(strings.TrimSpace(value))
