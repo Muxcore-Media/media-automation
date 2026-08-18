@@ -189,6 +189,40 @@ func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
 	return out
 }
 
+const defaultMaxReleaseGiB = 80
+
+func releaseTooLarge(size, maxBytes int64) bool {
+	return maxBytes > 0 && size > 0 && size > maxBytes
+}
+
+func filterOversizedReleases(scored []scoredRelease, maxBytes int64) []scoredRelease {
+	if maxBytes <= 0 || len(scored) == 0 {
+		return scored
+	}
+	out := scored[:0]
+	for _, r := range scored {
+		if releaseTooLarge(r.Size, maxBytes) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func (m *Module) maxReleaseBytesLocked() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.maxReleaseBytes
+}
+
+func (m *Module) releaseTooLarge(size int64) bool {
+	return releaseTooLarge(size, m.maxReleaseBytesLocked())
+}
+
+func (m *Module) filterOversizedReleases(scored []scoredRelease) []scoredRelease {
+	return filterOversizedReleases(scored, m.maxReleaseBytesLocked())
+}
+
 func isSeasonZeroEpisodeDummy(itemType string, season, episode int) bool {
 	return itemType == "tv" && season == 0 && episode >= 1
 }

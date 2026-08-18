@@ -57,6 +57,7 @@ type Module struct {
 	stallLoopMinutes        []int
 	keepStalledPartials     bool
 	downloadDir             string
+	maxReleaseBytes         int64
 	indexerHoldUntil        time.Time
 	searchGap               time.Duration
 	wantedSearchLimit       int
@@ -115,6 +116,7 @@ func NewModule(cfg Config) *Module {
 		stallLoopMinutes:        []int{60, 360},
 		searchGap:               2 * time.Second,
 		wantedSearchLimit:       8,
+		maxReleaseBytes:         int64(defaultMaxReleaseGiB) * (1 << 30),
 		indexerConns:            make(map[string]*grpc.ClientConn),
 		indexerClients:          make(map[string]indexerv1.IndexerServiceClient),
 	}
@@ -141,6 +143,11 @@ func NewModule(cfg Config) *Module {
 	} else if v := strings.TrimSpace(os.Getenv("MVP_DOWNLOADS_DIR")); v != "" {
 		m.downloadDir = v
 	}
+	if v := strings.TrimSpace(os.Getenv("AUTOMATION_MAX_RELEASE_GB")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			m.maxReleaseBytes = int64(n) * (1 << 30)
+		}
+	}
 	return m
 }
 
@@ -148,7 +155,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.31",
+		Version:        "0.1.32",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1510,6 +1517,7 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 	if itemType == "tv" {
 		results = filterTVReleaseGrain(results, itemType, title, year, season, episode, absolute, seriesType, cleanTitles)
 	}
+	results = m.filterOversizedReleases(results)
 	if len(results) > 0 {
 		loop := m.attemptLoop(ctx, itemID)
 		best := m.pickNextRelease(ctx, itemID, loop, results)
@@ -1988,6 +1996,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	}
 
 	scored = filterTVReleaseGrain(scored, itemType, query, year, season, episode, absolute, seriesType, cleanTitles)
+	scored = m.filterOversizedReleases(scored)
 	scored = dedupeScoredReleases(scored)
 	if int(maxLimit) > 0 && len(scored) > int(maxLimit) {
 		scored = scored[:maxLimit]
@@ -2143,6 +2152,11 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 			DownloadId: existing,
 			Status:     "sent",
 		}, nil
+	}
+
+	if m.releaseTooLarge(req.GetSize()) {
+		slog.Info("skip dispatch: release exceeds size cap", "title", req.GetTitle(), "size", req.GetSize(), "max_bytes", m.maxReleaseBytesLocked())
+		return nil, fmt.Errorf("release size exceeds max_release_gb")
 	}
 
 	if err := m.ensureDownloader(ctx); err != nil {
