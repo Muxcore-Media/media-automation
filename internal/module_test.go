@@ -478,6 +478,78 @@ func TestPreferSeasonPackSkipsAnime(t *testing.T) {
 	}
 }
 
+func TestAddToQueueCoercesSeasonZeroDummy(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	add, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		ItemType:     "tv",
+		ItemId:       "ep_tos_0_12",
+		TmdbId:       253,
+		Title:        "Star Trek",
+		Year:         1966,
+		SeasonNumber: 0,
+		EpisodeNumber: 12,
+		SeriesId:     "tv_tos",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if add.QueueId != "w_tv_tv_tos" {
+		t.Fatalf("queue id = %s want w_tv_tv_tos", add.QueueId)
+	}
+
+	var season, episode int
+	var itemID string
+	err = m.db.QueryRow(`SELECT item_id, season_number, episode_number FROM wanted_items WHERE item_id = 'tv_tos'`).Scan(&itemID, &season, &episode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if season != 0 || episode != 0 {
+		t.Fatalf("wanted grain season=%d episode=%d want pack 0/0", season, episode)
+	}
+
+	var dummy int
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_id = 'ep_tos_0_12'`).Scan(&dummy)
+	if dummy != 0 {
+		t.Fatal("S00E12 dummy row should not be inserted")
+	}
+
+	// leftover dummies (library sync from older binaries) are pruned
+	insertSeasonZeroDummy(t, m, "ep_tos_0_3", "tv_tos", 3)
+	m.pruneSeasonZeroEpisodeDummies(ctx)
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE season_number = 0 AND episode_number >= 1`).Scan(&dummy)
+	if dummy != 0 {
+		t.Fatalf("pruned leftovers still present: %d", dummy)
+	}
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_id = 'tv_tos'`).Scan(&dummy)
+	if dummy != 1 {
+		t.Fatal("pack row should survive prune")
+	}
+}
+
+func TestUpsertWantedRefusesSeasonZeroDummy(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "ep_s00e12", TmdbID: 1, Title: "Show",
+		SeasonNumber: 0, EpisodeNumber: 12, SeriesID: "tv_show",
+	})
+	var n int
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("upserted %d rows, want 0", n)
+	}
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "tv_show", TmdbID: 1, Title: "Show",
+		SeasonNumber: 0, EpisodeNumber: 0, SeriesID: "tv_show",
+	})
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("pack upsert count=%d want 1", n)
+	}
+}
+
 func TestAddToQueueAnimeAbsolute(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()

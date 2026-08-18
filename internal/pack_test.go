@@ -82,6 +82,19 @@ func TestPackSeasonsCovered(t *testing.T) {
 	}
 }
 
+func insertSeasonZeroDummy(t *testing.T, m *Module, itemID, seriesID string, episode int) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, err := m.db.Exec(`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, series_id, created_at, updated_at)
+		VALUES (?, 'tv', ?, 253, 'Star Trek', 1966, 0, ?, 1, 1, ?, ?, ?)`,
+		"w_tv_"+itemID, itemID, episode, seriesID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func insertGrabbedPack(t *testing.T, m *Module, itemID, seriesID, histTitle, status string, season int32) {
 	t.Helper()
 	ctx := context.Background()
@@ -147,10 +160,7 @@ func TestSkipSeasonZeroPlaceholderWhenSeriesGrabbing(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
 	insertGrabbedPack(t, m, "ep_tos_s03e24", "tv_tos", "Star Trek S03E24 Turnabout Intruder 1080p", "import_failed", 3)
-	m.upsertWanted(ctx, wantedEntry{
-		ItemType: "tv", ItemID: "ep_tos_0_12", TmdbID: 253, Title: "Star Trek", Year: 1966,
-		SeasonNumber: 0, EpisodeNumber: 12, SeriesID: "tv_tos",
-	})
+	insertSeasonZeroDummy(t, m, "ep_tos_0_12", "tv_tos", 12)
 	grabbing := m.seriesWithGrabs(ctx)
 	if !skipSeasonZeroPlaceholder("tv", 0, 12, "tv_tos", grabbing) {
 		t.Fatal("season-0 dummy should skip once the series is grabbing (including import_failed)")
@@ -248,5 +258,20 @@ func TestSearchAndStoreStillSearchesOtherSeason(t *testing.T) {
 	m.searchAndStore(ctx, wantedID, "tv", "ep_s14e01", "King of the Hill", 2122, 1997, 14, 1, 0, "", "tv_koth", "", nil, true, 0, "")
 	if idx.n.Load() == 0 {
 		t.Fatal("S14 should still search the indexer")
+	}
+}
+
+func TestCoerceTVWantedGrain(t *testing.T) {
+	s, e, id := coerceTVWantedGrain("tv", 0, 12, "ep_tos_0_12", "tv_tos")
+	if s != 0 || e != 0 || id != "tv_tos" {
+		t.Fatalf("dummy: season=%d episode=%d id=%s", s, e, id)
+	}
+	s, e, id = coerceTVWantedGrain("tv", 0, 0, "tv_tos", "tv_tos")
+	if s != 0 || e != 0 || id != "tv_tos" {
+		t.Fatalf("pack: season=%d episode=%d id=%s", s, e, id)
+	}
+	s, e, id = coerceTVWantedGrain("tv", 3, 24, "ep_s03e24", "tv_tos")
+	if s != 3 || e != 24 || id != "ep_s03e24" {
+		t.Fatalf("episode: season=%d episode=%d id=%s", s, e, id)
 	}
 }

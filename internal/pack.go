@@ -174,8 +174,24 @@ func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
 	return out
 }
 
+func isSeasonZeroEpisodeDummy(itemType string, season, episode int) bool {
+	return itemType == "tv" && season == 0 && episode >= 1
+}
+
 func skipSeasonZeroPlaceholder(itemType string, season, episode int, seriesID string, grabbing map[string]struct{}) bool {
 	_ = grabbing
 	_ = seriesID
-	return itemType == "tv" && season == 0 && episode >= 1
+	return isSeasonZeroEpisodeDummy(itemType, season, episode)
+}
+
+// coerceTVWantedGrain turns S00E12-style placeholders into a series pack row
+// (episode == 0). Real seasons and pack rows are unchanged.
+func coerceTVWantedGrain(itemType string, season, episode int32, itemID, seriesID string) (int32, int32, string) {
+	if !isSeasonZeroEpisodeDummy(itemType, int(season), int(episode)) {
+		return season, episode, itemID
+	}
+	if strings.TrimSpace(seriesID) != "" {
+		itemID = seriesID
+	}
+	return 0, 0, itemID
 }
