@@ -20,6 +20,7 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 	stallAuto := m.stallAutoMode
 	stallLoops := stallLoopCSV(m.stallLoopMinutes)
 	keepPartials := m.keepStalledPartials
+	maxGiB := m.maxReleaseBytes / (1 << 30)
 	m.mu.RUnlock()
 	overridesJSON, _ := m.listSeriesOverridesJSON(context.Background())
 	return []contracts.SettingDef{
@@ -87,6 +88,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Group:       "Stall",
 		},
 		{
+			Key:         "max_release_gb",
+			Label:       "Max release size (GiB)",
+			Type:        contracts.SettingTypeInt,
+			Default:     strconv.Itoa(defaultMaxReleaseGiB),
+			Value:       strconv.FormatInt(maxGiB, 10),
+			Description: "Skip indexer hits larger than this before AddTorrent. 0 disables the cap. Episode-grain searches still never take a multi-season remux. Default 80 GiB rejects full-series remuxes while allowing a typical season pack.",
+			Group:       "Automation",
+		},
+		{
 			Key:         "series_overrides_json",
 			Label:       "Per-series overrides (JSON)",
 			Type:        contracts.SettingTypeString,
@@ -145,6 +155,15 @@ func (m *Module) updateSetting(key, value string) error {
 	case "keep_stalled_partials":
 		m.mu.Lock()
 		m.keepStalledPartials = value == "true" || value == "1" || value == "on"
+		m.mu.Unlock()
+		return nil
+	case "max_release_gb":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid max_release_gb")
+		}
+		m.mu.Lock()
+		m.maxReleaseBytes = int64(n) * (1 << 30)
 		m.mu.Unlock()
 		return nil
 	case "series_overrides_json", "AUTOMATION_SERIES_OVERRIDES_JSON":

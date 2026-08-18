@@ -7,6 +7,7 @@ import (
 	"time"
 
 	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
+	autov1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 	"google.golang.org/grpc"
 )
 
@@ -306,5 +307,50 @@ func TestCoerceTVWantedGrain(t *testing.T) {
 	s, e, id = coerceTVWantedGrain("tv", 3, 24, "ep_s03e24", "tv_tos")
 	if s != 3 || e != 24 || id != "ep_s03e24" {
 		t.Fatalf("episode: season=%d episode=%d id=%s", s, e, id)
+	}
+}
+
+func TestEpisodeGrainSkipsFullSeriesRemux(t *testing.T) {
+	t.Parallel()
+	title := "Breaking Bad (2008) S01-S05 1080p BluRay REMUX Dual Audio [Hindi+Eng] ~ RemuxDoc"
+	scored := []scoredRelease{{Title: title, Size: 40 << 30, Score: 500, DownloadURL: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	got := filterTVReleaseGrain(scored, "tv", "Breaking Bad", 2008, 1, 1, 0, "standard", nil)
+	if len(got) != 0 {
+		t.Fatalf("episode wanted kept %d hits, want 0", len(got))
+	}
+}
+
+func TestPackGrainKeepsSeriesRemuxUnderCap(t *testing.T) {
+	t.Parallel()
+	title := "Breaking Bad (2008) S01-S05 1080p BluRay REMUX Dual Audio [Hindi+Eng] ~ RemuxDoc"
+	under := scoredRelease{Title: title, Size: 40 << 30, Score: 200, DownloadURL: "magnet:a"}
+	over := scoredRelease{Title: title, Size: 300 << 30, Score: 400, DownloadURL: "magnet:b"}
+	got := filterTVReleaseGrain([]scoredRelease{under, over}, "tv", "Breaking Bad", 2008, 1, 0, 0, "standard", nil)
+	if len(got) != 2 {
+		t.Fatalf("pack grain kept %d want 2", len(got))
+	}
+	capped := filterOversizedReleases(got, int64(defaultMaxReleaseGiB)<<30)
+	if len(capped) != 1 || capped[0].Size != under.Size {
+		t.Fatalf("size cap kept %+v", capped)
+	}
+}
+
+func TestDispatchRejectsOversizedRelease(t *testing.T) {
+	m := newTestModule(t)
+	fake := &fakeDownloaderClient{torrentID: "tor-huge"}
+	m.downloaderClient = fake
+	_, err := m.Dispatch(context.Background(), &autov1.DispatchRequest{
+		Guid:        "guid-huge",
+		Title:       "Breaking Bad (2008) S01-S05 1080p BluRay REMUX",
+		DownloadUrl: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Size:        300 << 30,
+		ItemType:    "tv",
+		ItemId:      "tv_bb",
+	})
+	if err == nil {
+		t.Fatal("expected size cap error")
+	}
+	if fake.calls != 0 {
+		t.Fatalf("AddTorrent calls=%d want 0", fake.calls)
 	}
 }

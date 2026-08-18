@@ -750,6 +750,10 @@ func TestScoreTVReleaseBoost(t *testing.T) {
 	if noEp >= 0 {
 		t.Fatalf("episode wanted must reject titles with no SxxExx, boost=%d", noEp)
 	}
+	fullSeries := scoreTVReleaseBoost("Breaking Bad (2008) S01-S05 1080p BluRay REMUX Dual Audio [Hindi+Eng] ~ RemuxDoc", 1, 1, 0, false, "standard")
+	if fullSeries >= 0 {
+		t.Fatalf("episode wanted must not take S01-S05 remux, boost=%d", fullSeries)
+	}
 	animeMiss := scoreTVReleaseBoost("Anime - 012 [1080p]", 0, 0, 150, false, "anime")
 	if animeMiss >= 0 {
 		t.Fatalf("anime must require absolute 150 in title, boost=%d", animeMiss)

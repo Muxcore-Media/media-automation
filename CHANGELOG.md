@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.32] — 2026-08-18
+
+### Fixed
+- Episode-grain searches never grab a multi-season remux (`S01-S05`). Hits larger than `max_release_gb` (default 80 GiB) are skipped before `AddTorrent` so a pack wanted row cannot occupy disk with a full-series remux.
+
 ## [0.1.31] — 2026-08-18
 
 ### Fixed
