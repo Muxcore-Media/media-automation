@@ -57,6 +57,12 @@ func TestPackSeasonsCovered(t *testing.T) {
 			covers:   []int{5},
 			uncovers: []int{1, 4},
 		},
+		{
+			title: "The Pink Panther S01   S04 432p DVDRip Xvid MTN",
+			lo:    1, hi: 4, ok: true,
+			covers:   []int{1, 2, 4},
+			uncovers: []int{5},
+		},
 	}
 	for _, tc := range cases {
 		lo, hi, ok := packSeasonsCovered(tc.title)
