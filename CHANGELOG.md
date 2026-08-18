@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.26] — 2026-08-18
+
+### Added
+- RSS search logs skip counts (`skipped_pack_cover`, `skipped_season0`, `skipped_recent`) and wanted-sync upsert totals at Info.
+
+### Fixed
+- Library sync keeps series-pack wanted rows (`season == 0 && episode == 0`) instead of deleting them because they are not ListMissing episodes. Leftover `:S0:pack` specials packs are still pruned.
+
 ## [0.1.25] — 2026-08-18
 
 ### Fixed

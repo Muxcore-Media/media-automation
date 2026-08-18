@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.25",
+		Version:        "0.1.26",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1341,6 +1341,7 @@ func (m *Module) searchQueuedItems() {
 	}
 	var batch []wantedRow
 	var packSkipIDs []string
+	nRecent, nPack, nS00 := 0, 0, 0
 	now := time.Now()
 	for rows.Next() {
 		var r wantedRow
@@ -1350,27 +1351,34 @@ func (m *Module) searchQueuedItems() {
 		}
 		missing := r.missing != 0
 		if skipWantedSearch(r.lastSearched, missing, upgrades, interval, now) {
+			nRecent++
 			continue
 		}
 		if r.itemType == "tv" && spansCoverSeason(packs[r.seriesID], int(r.seasonNum)) {
-			slog.Info("skip search: season pack already grabbed", "item", r.itemID, "series", r.seriesID, "season", r.seasonNum)
+			slog.Debug("skip search: season pack already grabbed", "item", r.itemID, "series", r.seriesID, "season", r.seasonNum)
 			packSkipIDs = append(packSkipIDs, r.id)
+			nPack++
 			continue
 		}
 		if skipSeasonZeroPlaceholder(r.itemType, int(r.seasonNum), int(r.epNum), r.seriesID, grabbing) {
-			slog.Info("skip search: season-0 placeholder already grabbing", "item", r.itemID, "series", r.seriesID)
+			slog.Debug("skip search: season-0 placeholder already grabbing", "item", r.itemID, "series", r.seriesID)
 			packSkipIDs = append(packSkipIDs, r.id)
+			nS00++
 			continue
 		}
-		batch = append(batch, r)
-		if len(batch) >= limit {
-			break
+		if len(batch) < limit {
+			batch = append(batch, r)
 		}
 	}
 	_ = rows.Close()
 	for _, id := range packSkipIDs {
 		m.touchLastSearched(id)
 	}
+	slog.Info("rss search queued",
+		"items", len(batch),
+		"skipped_recent", nRecent,
+		"skipped_pack_cover", nPack,
+		"skipped_season0", nS00)
 
 	for i, r := range batch {
 		if m.indexerOnHold() {
