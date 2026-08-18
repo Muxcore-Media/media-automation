@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.29] — 2026-08-18
+
+### Fixed
+- Pack searches never dispatch a single-episode or title-year mismatch (`Franklin-2025-S01E02` for Franklin 1997 S5). Grain/year is filtered again before Dispatch so metadata wait is not consumed.
+
 ## [0.1.28] — 2026-08-18
 
 ### Fixed
