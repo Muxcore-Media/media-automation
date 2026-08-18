@@ -261,6 +261,39 @@ func TestSearchAndStoreStillSearchesOtherSeason(t *testing.T) {
 	}
 }
 
+func TestSearchAndStoreSkipsWrongYearEpisodeForPack(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "tv_franklin_s5", TmdbID: 908, Title: "Franklin", Year: 1997,
+		SeasonNumber: 5, EpisodeNumber: 0, SeriesID: "tv_franklin",
+		CleanTitles:  []string{cleanMatchTitle("Franklin")},
+	})
+	var wantedID string
+	m.mu.RLock()
+	_ = m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'tv_franklin_s5'`).Scan(&wantedID)
+	m.mu.RUnlock()
+
+	fake := &fakeDownloaderClient{torrentID: "tor-should-not-add"}
+	m.downloaderClient = fake
+	idx := &countingIndexer{fakeIndexerClient: fakeIndexerClient{
+		results: []*indexerv1.SearchResult{{
+			Guid:        "g-franklin-2025",
+			Title:       "Franklin-2025-S01E02 1080p WEB",
+			DownloadUrl: "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff",
+		}},
+	}}
+	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
+
+	m.searchAndStore(ctx, wantedID, "tv", "tv_franklin_s5", "Franklin", 908, 1997, 5, 0, 0, "", "tv_franklin", "", []string{cleanMatchTitle("Franklin")}, true, 0, "")
+	if fake.calls != 0 {
+		t.Fatalf("wrong-year episode must not AddTorrent, calls=%d", fake.calls)
+	}
+	if m.isBlacklisted(ctx, "tv_franklin_s5", "g-franklin-2025", 1) {
+		t.Fatal("skipped mismatch must not consume the attempt loop")
+	}
+}
+
 func TestCoerceTVWantedGrain(t *testing.T) {
 	s, e, id := coerceTVWantedGrain("tv", 0, 12, "ep_tos_0_12", "tv_tos")
 	if s != 0 || e != 0 || id != "tv_tos" {

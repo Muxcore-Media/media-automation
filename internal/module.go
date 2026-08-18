@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.28",
+		Version:        "0.1.29",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1432,6 +1432,9 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 	if o := m.seriesOverride(ctx, seriesID); o != nil {
 		results = applyReleaseGroupOverrides(results, o.PreferredGroups, o.IgnoredGroups)
 	}
+	if itemType == "tv" {
+		results = filterTVReleaseGrain(results, itemType, title, year, season, episode, absolute, seriesType, cleanTitles)
+	}
 	if len(results) > 0 {
 		loop := m.attemptLoop(ctx, itemID)
 		best := m.pickNextRelease(ctx, itemID, loop, results)
@@ -1909,6 +1912,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		sortScoredDesc(scored)
 	}
 
+	scored = filterTVReleaseGrain(scored, itemType, query, year, season, episode, absolute, seriesType, cleanTitles)
 	scored = dedupeScoredReleases(scored)
 	if int(maxLimit) > 0 && len(scored) > int(maxLimit) {
 		scored = scored[:maxLimit]
@@ -1998,6 +2002,29 @@ var (
 	reSeasonPackTitle = regexp.MustCompile(`(?i)(?:season[.\s_-]*pack|complete[.\s_-]*season|season[.\s_-]*\d{1,2}[.\s_-]*complete|S\d{1,2}[.\s_-]*(?:complete|pack))`)
 	reSeasonInTitle   = regexp.MustCompile(`(?i)(?:^|[^0-9])S(\d{1,2})(?:[^0-9E]|$)`)
 )
+
+func filterTVReleaseGrain(scored []scoredRelease, itemType, wantedTitle string, year, season, episode, absolute int, seriesType string, cleanTitles []string) []scoredRelease {
+	if len(scored) == 0 || itemType != "tv" {
+		return scored
+	}
+	wantPack := season > 0 && episode == 0
+	needGrain := wantPack || episode > 0 || (seriesType == "anime" && absolute > 0)
+	titles := cleanTitles
+	if len(titles) == 0 && wantedTitle != "" {
+		titles = []string{cleanMatchTitle(wantedTitle)}
+	}
+	out := scored[:0]
+	for _, r := range scored {
+		if needGrain && scoreTVReleaseBoost(r.Title, season, episode, absolute, wantPack, seriesType) < 0 {
+			continue
+		}
+		if year > 0 && !releaseMatchesWanted(r.Title, "tv", titles, year) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
 
 func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bool, seriesType string) int {
 	boost := 0
