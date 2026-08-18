@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.27",
+		Version:        "0.1.28",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1446,7 +1446,7 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 			acquired := parseFlexibleTime(fileAcquiredAt)
 			now := time.Now().UTC()
 			grabURL := m.maybeMergeMagnet(ctx, itemID, loop, results, best)
-			if grabURL != "" && m.releaseInFlight(ctx, best.GUID, grabURL, best.Title) {
+			if grabURL != "" && m.existingDownloadID(ctx, best.GUID, grabURL, best.Title, loop) != "" {
 				slog.Info("skip dispatch: release already in flight", "title", best.Title, "item", itemID, "guid", best.GUID)
 			} else if grabURL != "" &&
 				decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
@@ -2035,7 +2035,7 @@ func animeAbsoluteInTitle(name string, absolute int) bool {
 }
 
 func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest) (*automationv1.DispatchResponse, error) {
-	if existing := m.existingDownloadID(ctx, req.GetGuid(), req.GetDownloadUrl(), req.GetTitle()); existing != "" {
+	if existing := m.existingDownloadID(ctx, req.GetGuid(), req.GetDownloadUrl(), req.GetTitle(), m.attemptLoop(ctx, req.GetItemId())); existing != "" {
 		slog.Info("skip duplicate already-grabbed release", "title", req.GetTitle(), "guid", req.GetGuid(), "id", existing)
 		return &automationv1.DispatchResponse{
 			DownloadId: existing,
