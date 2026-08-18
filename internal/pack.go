@@ -122,3 +122,44 @@ func (m *Module) seasonPackAlreadyGrabbed(ctx context.Context, seriesID string, 
 	}
 	return spansCoverSeason(m.activeSeasonPacks(ctx)[seriesID], season)
 }
+
+// seriesWithGrabs is the set of series_id values that already have a sent or
+// completed download. Season-0 request placeholders must not keep searching
+// once the series is already grabbing.
+func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
+	out := map[string]struct{}{}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return out
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT COALESCE(w.series_id, '')
+		FROM download_history h
+		INNER JOIN wanted_items w ON w.item_id = h.wanted_item_id
+		WHERE h.status IN ('sent', 'completed')
+		  AND w.item_type = 'tv'
+		  AND COALESCE(w.series_id, '') != ''
+	`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seriesID string
+		if err := rows.Scan(&seriesID); err != nil {
+			continue
+		}
+		out[seriesID] = struct{}{}
+	}
+	return out
+}
+
+func skipSeasonZeroPlaceholder(itemType string, season, episode int, seriesID string, grabbing map[string]struct{}) bool {
+	if itemType != "tv" || season != 0 || episode < 1 || strings.TrimSpace(seriesID) == "" {
+		return false
+	}
+	_, ok := grabbing[seriesID]
+	return ok
+}

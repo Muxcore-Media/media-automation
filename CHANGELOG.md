@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.16] — 2026-08-18
+
+### Fixed
+- Season-0 request placeholders (`S00E12` dummy rows) skip indexer search once the series already has a `sent` or `completed` grab. Vault Star Trek was re-searching the same S03E24 for every placeholder every RSS cycle.
+
 ## [0.1.15] — 2026-08-18
 
 ### Fixed
