@@ -414,6 +414,40 @@ func TestPruneWantedNotInLibraries(t *testing.T) {
 	}
 }
 
+func TestPruneWantedKeepsSeriesPackDropsSpecialsPack(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "tv_tos", TmdbID: 253, Title: "Star Trek",
+		SeasonNumber: 0, EpisodeNumber: 0, SeriesID: "tv_tos",
+	})
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "tv_tos:S0:pack", TmdbID: 253, Title: "Star Trek",
+		SeasonNumber: 0, EpisodeNumber: 0, SeriesID: "tv_tos",
+	})
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "tv_tos:S1:pack", TmdbID: 253, Title: "Star Trek",
+		SeasonNumber: 1, EpisodeNumber: 0, SeriesID: "tv_tos",
+	})
+	seen := map[string]struct{}{"tv:tv_tos:S1:pack": {}}
+	m.pruneWantedNotInLibraries(ctx, seen, true, true)
+	m.pruneSeasonZeroEpisodeDummies(ctx)
+
+	var nSeries, nS0, nS1 int
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_id = 'tv_tos'`).Scan(&nSeries)
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_id = 'tv_tos:S0:pack'`).Scan(&nS0)
+	_ = m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_id = 'tv_tos:S1:pack'`).Scan(&nS1)
+	if nSeries != 1 {
+		t.Fatalf("series pack row kept=%d want 1", nSeries)
+	}
+	if nS0 != 0 {
+		t.Fatal("S0 specials pack should be pruned")
+	}
+	if nS1 != 1 {
+		t.Fatal("S01 pack in seen should remain")
+	}
+}
+
 func TestSearchAndStoreDoesNotClearMissing(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
