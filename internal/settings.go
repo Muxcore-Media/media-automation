@@ -16,6 +16,9 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 	search := m.enableAutomaticSearch
 	upgrades := m.enableAutomaticUpgrades
 	rss := m.rssSyncMinutes
+	stallMins := m.stallTimeoutMinutes
+	stallAuto := m.stallAutoMode
+	stallLoops := stallLoopCSV(m.stallLoopMinutes)
 	m.mu.RUnlock()
 	overridesJSON, _ := m.listSeriesOverridesJSON(context.Background())
 	return []contracts.SettingDef{
@@ -45,6 +48,33 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Value:       strconv.Itoa(rss),
 			Description: "How often to sync RSS / wanted searches",
 			Group:       "Automation",
+		},
+		{
+			Key:         "stall_timeout_minutes",
+			Label:       "Stall timeout (minutes)",
+			Type:        contracts.SettingTypeInt,
+			Default:     strconv.Itoa(defaultStallTimeoutMinutes),
+			Value:       strconv.Itoa(stallMins),
+			Description: "Give up on a torrent with no progress after this many minutes when auto mode is off. Then blacklist it and try the next release.",
+			Group:       "Stall",
+		},
+		{
+			Key:         "stall_auto_mode",
+			Label:       "Stall auto mode",
+			Type:        contracts.SettingTypeBool,
+			Default:     "true",
+			Value:       strconv.FormatBool(stallAuto),
+			Description: "After every available torrent has been tried, start a new loop with a longer stall timeout (see stall_loop_minutes).",
+			Group:       "Stall",
+		},
+		{
+			Key:         "stall_loop_minutes",
+			Label:       "Stall loop minutes",
+			Type:        contracts.SettingTypeString,
+			Default:     defaultStallLoopCSV,
+			Value:       stallLoops,
+			Description: "Comma-separated stall minutes per attempt loop when auto mode is on. Default 60,360 (1h then 6h). After the last value, later loops keep that timeout.",
+			Group:       "Stall",
 		},
 		{
 			Key:         "series_overrides_json",
@@ -77,6 +107,29 @@ func (m *Module) updateSetting(key, value string) error {
 		}
 		m.mu.Lock()
 		m.rssSyncMinutes = n
+		m.mu.Unlock()
+		return nil
+	case "stall_timeout_minutes":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid stall_timeout_minutes")
+		}
+		m.mu.Lock()
+		m.stallTimeoutMinutes = n
+		m.mu.Unlock()
+		return nil
+	case "stall_auto_mode":
+		m.mu.Lock()
+		m.stallAutoMode = value == "true" || value == "1" || value == "on"
+		m.mu.Unlock()
+		return nil
+	case "stall_loop_minutes":
+		loops, err := parseStallLoopMinutes(value)
+		if err != nil {
+			return err
+		}
+		m.mu.Lock()
+		m.stallLoopMinutes = loops
 		m.mu.Unlock()
 		return nil
 	case "series_overrides_json", "AUTOMATION_SERIES_OVERRIDES_JSON":

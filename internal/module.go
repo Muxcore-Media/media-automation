@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 
@@ -50,6 +52,12 @@ type Module struct {
 	enableAutomaticSearch   bool
 	enableAutomaticUpgrades bool
 	rssSyncMinutes          int
+	stallTimeoutMinutes     int
+	stallAutoMode           bool
+	stallLoopMinutes        []int
+	indexerHoldUntil        time.Time
+	searchGap               time.Duration
+	wantedSearchLimit       int
 
 	indexerConns   map[string]*grpc.ClientConn
 	indexerClients map[string]indexerv1.IndexerServiceClient
@@ -92,23 +100,43 @@ func NewModule(cfg Config) *Module {
 	if v := os.Getenv("AUTOMATION_GRPC_ADDR"); v != "" {
 		cfg.GRPCAddr = v
 	}
-	return &Module{
+	m := &Module{
 		id:                      cfg.ID,
 		dbPath:                  cfg.DBPath,
 		grpcAddr:                cfg.GRPCAddr,
 		enableAutomaticSearch:   true,
 		enableAutomaticUpgrades: true,
 		rssSyncMinutes:          15,
+		stallTimeoutMinutes:     defaultStallTimeoutMinutes,
+		stallAutoMode:           true,
+		stallLoopMinutes:        []int{60, 360},
+		searchGap:               2 * time.Second,
+		wantedSearchLimit:       8,
 		indexerConns:            make(map[string]*grpc.ClientConn),
 		indexerClients:          make(map[string]indexerv1.IndexerServiceClient),
 	}
+	if v := os.Getenv("AUTOMATION_STALL_TIMEOUT_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 1 {
+			m.stallTimeoutMinutes = n
+		}
+	}
+	if v := os.Getenv("AUTOMATION_STALL_AUTO_MODE"); v != "" {
+		lv := strings.ToLower(strings.TrimSpace(v))
+		m.stallAutoMode = lv == "true" || lv == "1" || lv == "on"
+	}
+	if v := os.Getenv("AUTOMATION_STALL_LOOP_MINUTES"); v != "" {
+		if loops, err := parseStallLoopMinutes(v); err == nil {
+			m.stallLoopMinutes = loops
+		}
+	}
+	return m
 }
 
 func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:      "0.1.7",
+		Version:        "0.1.9",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -202,6 +230,10 @@ func (m *Module) Init(ctx context.Context) error {
 		db.Close()
 		return fmt.Errorf("migrate series overrides: %w", err)
 	}
+	if err := m.migrateStallTables(ctx, db); err != nil {
+		db.Close()
+		return fmt.Errorf("migrate stall tables: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE download_history ADD COLUMN download_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		db.Close()
 		return fmt.Errorf("migrate download_history: %w", err)
@@ -255,6 +287,7 @@ func (m *Module) Start(ctx context.Context) error {
 
 	go m.dialCore(context.Background())
 	go m.rssSyncLoop()
+	go m.stallWatchLoop()
 	go m.subscribeToMediaEvents()
 	return nil
 }
@@ -674,10 +707,11 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		return
 	}
 
-	var histID string
+	var histID, guid, wantedID, downloadURL, histStatus string
+	var loop int
 	err := db.QueryRowContext(ctx,
-		`SELECT id FROM download_history WHERE download_id = ?`, payload.ID,
-	).Scan(&histID)
+		`SELECT id, guid, wanted_item_id, COALESCE(download_url, ''), COALESCE(attempt_loop, 1), status FROM download_history WHERE download_id = ?`, payload.ID,
+	).Scan(&histID, &guid, &wantedID, &downloadURL, &loop, &histStatus)
 	if err == sql.ErrNoRows {
 		slog.Debug("download event for unknown download_id", "type", eventType, "download_id", payload.ID)
 		return
@@ -690,16 +724,27 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if eventType == contracts.EventDownloadFailed {
+		if histStatus != "sent" && histStatus != "stalled" {
+			return
+		}
 		if _, err := db.ExecContext(ctx,
 			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
 			"failed", now, histID,
 		); err != nil {
 			slog.Warn("mark download failed", "id", histID, "error", err)
 		}
+		reason := payload.Error
+		if reason == "" {
+			reason = "download failed"
+		}
+		m.blacklistRelease(ctx, wantedID, releaseAttemptKey(guid, downloadURL), loop, reason)
 		return
 	}
 
 	// EventDownloadCompleted
+	if histStatus != "sent" {
+		return
+	}
 	if err := m.ensureScanner(ctx); err != nil {
 		slog.Warn("ensure scanner for import", "download_id", payload.ID, "error", err)
 		if _, uerr := db.ExecContext(ctx,
@@ -1075,7 +1120,7 @@ func (m *Module) resolveOwnedScore(ctx context.Context, itemID, filePath, qualit
 			}
 		}
 	}
-	return scoreRelease(&indexerv1.SearchResult{Title: title}, nil, 0)
+	return scoreRelease(&indexerv1.SearchResult{Title: title}, nil, 0, "")
 }
 
 func (m *Module) scoreFromHistory(ctx context.Context, itemID string) int {
@@ -1126,48 +1171,120 @@ func (m *Module) rssSyncLoop() {
 func (m *Module) rssSync() {
 	slog.Debug("rss sync cycle starting")
 	m.syncWantedFromLibraries(context.Background())
+	m.reapStalledDownloads(context.Background(), time.Now().UTC())
 	m.searchQueuedItems()
 }
 
+func (m *Module) indexerOnHold() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.indexerHoldUntil.IsZero() && time.Now().Before(m.indexerHoldUntil)
+}
+
+func (m *Module) holdIndexer(d time.Duration) {
+	if d <= 0 {
+		d = 15 * time.Minute
+	}
+	until := time.Now().Add(d)
+	m.mu.Lock()
+	if until.After(m.indexerHoldUntil) {
+		m.indexerHoldUntil = until
+	}
+	m.mu.Unlock()
+}
+
 func (m *Module) searchQueuedItems() {
+	if m.indexerOnHold() {
+		m.mu.RLock()
+		until := m.indexerHoldUntil
+		m.mu.RUnlock()
+		slog.Info("skip wanted search: indexer cooling down", "until", until.UTC().Format(time.RFC3339))
+		return
+	}
+
 	m.mu.RLock()
 	db := m.db
+	upgrades := m.enableAutomaticUpgrades
+	gap := m.searchGap
+	limit := m.wantedSearchLimit
+	interval := time.Duration(m.rssSyncMinutes) * time.Minute
 	m.mu.RUnlock()
 	if db == nil {
 		return
+	}
+	if limit < 1 {
+		limit = 8
+	}
+	if interval < time.Minute {
+		interval = 15 * time.Minute
 	}
 
 	type wantedRow struct {
 		id, itemType, itemID, title, profileID, seriesType, seriesID, cleanRaw, fileAcquiredAt string
 		tmdbID, year, seasonNum, epNum, absNum, missing, currentScore                          int64
+		lastSearched                                                                           string
 	}
 
 	// Drain rows before indexer RPCs so SQLite is not blocked across searches.
-	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(series_id, ''), COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, '') FROM wanted_items WHERE monitored = 1 AND (missing = 1 OR missing = 0)`)
+	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(series_id, ''), COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, ''), COALESCE(last_searched, '') FROM wanted_items WHERE monitored = 1 ORDER BY missing DESC, last_searched ASC`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
 	}
 	var batch []wantedRow
+	now := time.Now()
 	for rows.Next() {
 		var r wantedRow
-		if err := rows.Scan(&r.id, &r.itemType, &r.itemID, &r.tmdbID, &r.title, &r.year, &r.seasonNum, &r.epNum, &r.profileID, &r.absNum, &r.seriesType, &r.seriesID, &r.cleanRaw, &r.missing, &r.currentScore, &r.fileAcquiredAt); err != nil {
+		if err := rows.Scan(&r.id, &r.itemType, &r.itemID, &r.tmdbID, &r.title, &r.year, &r.seasonNum, &r.epNum, &r.profileID, &r.absNum, &r.seriesType, &r.seriesID, &r.cleanRaw, &r.missing, &r.currentScore, &r.fileAcquiredAt, &r.lastSearched); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
+		missing := r.missing != 0
+		if skipWantedSearch(r.lastSearched, missing, upgrades, interval, now) {
+			continue
+		}
 		batch = append(batch, r)
+		if len(batch) >= limit {
+			break
+		}
 	}
 	_ = rows.Close()
 
-	for _, r := range batch {
+	for i, r := range batch {
+		if m.indexerOnHold() {
+			slog.Warn("wanted search paused: indexer rate limit")
+			return
+		}
 		m.searchAndStore(context.Background(), r.id, r.itemType, r.itemID, r.title, int(r.tmdbID), int(r.year), int(r.seasonNum), int(r.epNum), int(r.absNum), r.seriesType, r.seriesID, r.profileID, decodeCleanTitles(r.cleanRaw), r.missing != 0, int(r.currentScore), r.fileAcquiredAt)
+		if gap > 0 && i+1 < len(batch) {
+			time.Sleep(gap)
+		}
 	}
+}
+
+func skipWantedSearch(lastSearched string, missing, upgrades bool, minAge time.Duration, now time.Time) bool {
+	if !missing && !upgrades {
+		return true
+	}
+	if !missing {
+		// Quality upgrades: at most once per 6h, and never in the same burst as missing grabs.
+		if minAge < 6*time.Hour {
+			minAge = 6 * time.Hour
+		}
+	}
+	if strings.TrimSpace(lastSearched) == "" {
+		return false
+	}
+	t := parseFlexibleTime(lastSearched)
+	if t.IsZero() {
+		return false
+	}
+	return now.Sub(t) < minAge
 }
 
 func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, seriesID, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
 	if m.hasInFlightDownload(ctx, itemID) {
 		slog.Debug("skip search: in-flight download", "item", itemID)
-		m.touchLastSearched(wantedID)
 		return
 	}
 
@@ -1176,30 +1293,39 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 		results = applyReleaseGroupOverrides(results, o.PreferredGroups, o.IgnoredGroups)
 	}
 	if len(results) > 0 {
-		best := results[0]
-		slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score)
+		loop := m.attemptLoop(ctx, itemID)
+		best := m.pickNextRelease(ctx, itemID, loop, results)
+		if best == nil {
+			loop = m.advanceAttemptLoop(ctx, itemID, loop)
+			best = m.pickNextRelease(ctx, itemID, loop, results)
+		}
+		if best != nil {
+			slog.Info("found releases for "+title, "item", itemID, "matches", len(results), "best", best.Title, "score", best.Score, "loop", loop)
 
-		p := m.loadProfileDecision(ctx, profileID)
-		acquired := parseFlexibleTime(fileAcquiredAt)
-		now := time.Now().UTC()
-		if best.DownloadURL != "" &&
-			decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
-			m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, seriesID, now) {
-			_, err := m.Dispatch(ctx, &automationv1.DispatchRequest{
-				Guid:             best.GUID,
-				Title:            best.Title,
-				DownloadUrl:      best.DownloadURL,
-				DownloadProtocol: best.DownloadProtocol,
-				Size:             best.Size,
-				Score:            int32(best.Score),
-				IndexerName:      best.IndexerName,
-				ItemType:         itemType,
-				ItemId:           itemID,
-				TmdbId:           int32(tmdbID),
-			})
-			if err != nil {
-				slog.Warn("dispatch failed for "+title, "item", itemID, "error", err)
+			p := m.loadProfileDecision(ctx, profileID)
+			acquired := parseFlexibleTime(fileAcquiredAt)
+			now := time.Now().UTC()
+			if best.DownloadURL != "" &&
+				decideGrab(p, missing, currentScore, best.Score, acquired, now) &&
+				m.delayElapsed(ctx, best.GUID, best.DownloadProtocol, seriesID, now) {
+				_, err := m.Dispatch(ctx, &automationv1.DispatchRequest{
+					Guid:             best.GUID,
+					Title:            best.Title,
+					DownloadUrl:      best.DownloadURL,
+					DownloadProtocol: best.DownloadProtocol,
+					Size:             best.Size,
+					Score:            int32(best.Score),
+					IndexerName:      best.IndexerName,
+					ItemType:         itemType,
+					ItemId:           itemID,
+					TmdbId:           int32(tmdbID),
+				})
+				if err != nil {
+					slog.Warn("dispatch failed for "+title, "item", itemID, "error", err)
+				}
 			}
+		} else {
+			slog.Debug("all releases blacklisted this loop", "item", itemID, "matches", len(results), "loop", loop)
 		}
 	}
 
@@ -1257,10 +1383,11 @@ type scoredRelease struct {
 	Score            int
 }
 
-func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string, year int) []scoredRelease {
+func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string, year int, itemType string) []scoredRelease {
 	if len(cleanTitles) == 0 && title != "" {
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
+	cleanTitles = usableSearchTitles(title, cleanTitles)
 	p := m.loadProfileDecision(ctx, profileID)
 	var scored []scoredRelease
 	if err := m.ensureFormats(ctx); err == nil {
@@ -1268,7 +1395,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		fc := m.formatsClient
 		m.mu.RUnlock()
 		for _, r := range results {
-			if !releaseMatchesTitles(r.GetTitle(), cleanTitles, year) {
+			if !releaseMatchesWanted(r.GetTitle(), itemType, cleanTitles, year) {
 				continue
 			}
 			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
@@ -1300,7 +1427,7 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		}
 	}
 	if len(scored) == 0 {
-		return filterByMinScore(scoreReleases(results, title, cleanTitles, year), p.MinScore)
+		return filterByMinScore(scoreReleases(results, title, cleanTitles, year, itemType), p.MinScore)
 	}
 	sortScoredDesc(scored)
 	if len(scored) > 100 {
@@ -1417,13 +1544,14 @@ func filterByMinScore(scored []scoredRelease, minScore int) []scoredRelease {
 	return out
 }
 
-func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles []string, year int) []scoredRelease {
+func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles []string, year int, itemType string) []scoredRelease {
 	if len(cleanTitles) == 0 && title != "" {
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
+	cleanTitles = usableSearchTitles(title, cleanTitles)
 	var scored []scoredRelease
 	for _, r := range results {
-		s := scoreRelease(r, cleanTitles, year)
+		s := scoreRelease(r, cleanTitles, year, itemType)
 		if s > 0 {
 			scored = append(scored, scoredRelease{
 				GUID:             r.GetGuid(),
@@ -1448,9 +1576,9 @@ func scoreReleases(results []*indexerv1.SearchResult, title string, cleanTitles 
 	return scored
 }
 
-func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string, year int) int {
+func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string, year int, itemType string) int {
 	name := r.GetTitle()
-	if !releaseMatchesTitles(name, cleanTitles, year) {
+	if !releaseMatchesWanted(name, itemType, cleanTitles, year) {
 		return 0
 	}
 	score := 0
@@ -1612,12 +1740,16 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		Limit:    maxLimit,
 	}
 
-	raw := parallelIndexerSearch(ctx, clients, req)
+	raw, limited := parallelIndexerSearch(ctx, clients, req)
+	if limited {
+		m.holdIndexer(15 * time.Minute)
+		slog.Warn("indexer rate limited; pausing wanted searches")
+	}
 	if len(raw) == 0 {
 		return nil
 	}
 
-	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID, year)
+	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID, year, itemType)
 	if wantPack || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
@@ -1638,9 +1770,9 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 }
 
 // parallelIndexerSearch fans out Search to every client; failures are logged and skipped.
-func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.IndexerServiceClient, req *indexerv1.SearchRequest) []*indexerv1.SearchResult {
+func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.IndexerServiceClient, req *indexerv1.SearchRequest) ([]*indexerv1.SearchResult, bool) {
 	if len(clients) == 0 {
-		return nil
+		return nil, false
 	}
 	type batch struct {
 		id      string
@@ -1667,14 +1799,18 @@ func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.Ind
 	}()
 
 	var all []*indexerv1.SearchResult
+	rateLimited := false
 	for b := range ch {
 		if b.err != nil {
+			if st, ok := status.FromError(b.err); ok && st.Code() == codes.ResourceExhausted {
+				rateLimited = true
+			}
 			slog.Warn("indexer search failed", "module", b.id, "error", b.err)
 			continue
 		}
 		all = append(all, b.results...)
 	}
-	return all
+	return all, rateLimited
 }
 
 // dedupeScoredReleases keeps the highest-scored release per guid (or download_url if guid empty).
@@ -1768,13 +1904,14 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	now := time.Now().UTC().Format(time.RFC3339)
 	histID := fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano())
 	if db != nil {
+		loop := m.attemptLoop(context.Background(), req.GetItemId())
 		if _, err := db.ExecContext(context.Background(),
-			`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
+			`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?, 0, ?)`,
 			histID,
 			req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
 			req.GetSize(), req.GetScore(), req.GetDownloadUrl(), req.GetDownloadProtocol(),
-			now, now, addResp.GetTorrentId(),
+			now, now, addResp.GetTorrentId(), loop, now,
 		); err != nil {
 			slog.Warn("insert download_history", "error", err)
 		}
@@ -1809,7 +1946,6 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		Status:     "sent",
 	}, nil
 }
-
 
 func (m *Module) publishImportFailed(downloadID, path, errMsg string) {
 	payload, err := json.Marshal(contracts.ImportFailedPayload{

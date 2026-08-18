@@ -71,23 +71,65 @@ func TestReleaseMatchesTitlesAllowsTrueHits(t *testing.T) {
 	}
 }
 
+func TestAmbiguousSearchAlias(t *testing.T) {
+	if !ambiguousSearchAlias("Breaking Bad", "BB") {
+		t.Fatal("BB should be excluded from search")
+	}
+	if !ambiguousSearchAlias("Breaking Bad", "BrBa") {
+		t.Fatal("BrBa should be excluded from search")
+	}
+	if ambiguousSearchAlias("Breaking Bad", "Breaking Bad") {
+		t.Fatal("primary title is never ambiguous")
+	}
+	if ambiguousSearchAlias("Dune", "Dune") {
+		t.Fatal("short primary title must remain searchable")
+	}
+	if ambiguousSearchAlias("My Neighbor Totoro", "Totoro") {
+		t.Fatal("distinct long alias should remain searchable")
+	}
+}
+
+func TestReleaseMatchesWantedMediaType(t *testing.T) {
+	bb := []string{cleanMatchTitle("Breaking Bad")}
+	if releaseMatchesWanted("Chelsea.FC.Season.Review.1999.00", "tv", bb, 2008) {
+		t.Fatal("sports review must not match Breaking Bad")
+	}
+	if releaseMatchesWanted("BB.S01E01.HDTV", "tv", bb, 2008) {
+		t.Fatal("acronym-only release should not match without BB in search titles")
+	}
+	if !releaseMatchesWanted("Breaking.Bad.S03E01.480p.BluRay", "tv", bb, 2008) {
+		t.Fatal("real episode should match")
+	}
+	if releaseMatchesWanted("Breaking.Bad.2008.1080p.BluRay", "tv", bb, 2008) {
+		t.Fatal("movie-shaped release should not satisfy a TV wanted item")
+	}
+
+	fc := []string{cleanMatchTitle("Fight Club")}
+	if releaseMatchesWanted("Fight.Club.S01E01.HDTV", "movie", fc, 1999) {
+		t.Fatal("Radarr rejects TV tokens for movies")
+	}
+	if !releaseMatchesWanted("Fight.Club.1999.1080p.BluRay", "movie", fc, 1999) {
+		t.Fatal("scene movie should match")
+	}
+}
+
 func TestScoreReleaseTitleGate(t *testing.T) {
 	titles := []string{cleanMatchTitle("Fight Club")}
 	match := scoreRelease(&indexerv1.SearchResult{
 		Title: "Fight.Club.1999.1080p.BluRay-GROUP", Seeders: 50, Size: 8 * 1024 * 1024 * 1024,
-	}, titles, 1999)
+	}, titles, 1999, "movie")
 	if match <= 0 {
 		t.Fatalf("expected positive score, got %d", match)
 	}
 	miss := scoreRelease(&indexerv1.SearchResult{
 		Title: "Completely.Unrelated.2020.1080p.BluRay", Seeders: 50, Size: 8 * 1024 * 1024 * 1024,
-	}, titles, 1999)
+	}, titles, 1999, "movie")
 	if miss != 0 {
 		t.Fatalf("expected 0 for mismatch, got %d", miss)
 	}
 	wrongYear := scoreRelease(&indexerv1.SearchResult{
 		Title: "Female.Fight.Club.2016.1080p.BluRay", Seeders: 50, Size: 8 * 1024 * 1024 * 1024,
-	}, titles, 1999)
+	}, titles, 1999, "movie")
 	if wrongYear != 0 {
 		t.Fatalf("expected 0 for year/title mismatch, got %d", wrongYear)
 	}

@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -17,6 +18,8 @@ type fakeDownloaderClient struct {
 	torrentID string
 	calls     int
 	lastURL   string
+	torrents  map[string]*cdlv1.TorrentInfo
+	removed   []string
 }
 
 func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorrentRequest, opts ...grpc.CallOption) (*cdlv1.AddTorrentResponse, error) {
@@ -27,6 +30,25 @@ func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorr
 		id = "torrent-fixture-1"
 	}
 	return &cdlv1.AddTorrentResponse{TorrentId: id, Name: in.GetCategory()}, nil
+}
+
+func (f *fakeDownloaderClient) GetTorrent(ctx context.Context, in *cdlv1.GetTorrentRequest, opts ...grpc.CallOption) (*cdlv1.GetTorrentResponse, error) {
+	if f.torrents == nil {
+		return nil, fmt.Errorf("torrent not found")
+	}
+	t, ok := f.torrents[in.GetTorrentId()]
+	if !ok {
+		return nil, fmt.Errorf("torrent not found")
+	}
+	return &cdlv1.GetTorrentResponse{Torrent: t}, nil
+}
+
+func (f *fakeDownloaderClient) RemoveTorrent(ctx context.Context, in *cdlv1.RemoveTorrentRequest, opts ...grpc.CallOption) (*cdlv1.RemoveTorrentResponse, error) {
+	f.removed = append(f.removed, in.GetTorrentId())
+	if f.torrents != nil {
+		delete(f.torrents, in.GetTorrentId())
+	}
+	return &cdlv1.RemoveTorrentResponse{Success: true}, nil
 }
 
 // TestDispatchDownloadCompletedImportPath is the offline regression:

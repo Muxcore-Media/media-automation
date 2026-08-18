@@ -32,8 +32,9 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 - **Download dispatch** — sends selected releases to a downloader module
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
 - **Periodic RSS sync** — automatically searches for wanted items on an interval (default 15 minutes; mesh setting `rss_sync_minutes`)
-- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`
+- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`)
 - **Download history** — tracks all dispatched downloads with status
+- **Stall / blacklist** — a torrent with no byte progress is given up after a configurable stall timeout (default 3h, or auto loops of 1h then 6h). That GUID is blacklisted for the current attempt loop so the next search dispatches the next-best release. After every available torrent has been tried, a new loop retries them with a longer stall.
 - **Import on complete** — on `download.completed`, asks media-scanner to `ImportPath` the torrent save path and marks history complete (or `import_failed`); `download.failed` marks history failed. On `media.*.file_added`, marks the wanted item owned (or removes it at cutoff / when upgrades disabled).
 
 ---
@@ -61,6 +62,9 @@ For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or w
 | `MUXCORE_MODULE_ID` | `media-automation` | Module identity (overrides `--muxcore-module-id`) |
 | `MUXCORE_INSECURE_DISABLE_TLS` | `false` | Disable TLS for dev |
 | `AUTOMATION_SERIES_OVERRIDES_JSON` | `[]` | Seed/replace per-series overrides on init (JSON array) |
+| `AUTOMATION_STALL_TIMEOUT_MINUTES` | `180` | No-progress timeout when auto mode is off |
+| `AUTOMATION_STALL_AUTO_MODE` | `true` | Escalate stall timeout after each full pass of available torrents |
+| `AUTOMATION_STALL_LOOP_MINUTES` | `60,360` | Comma-separated stall minutes per attempt loop (auto mode) |
 
 ---
 
