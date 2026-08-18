@@ -138,3 +138,28 @@ func TestDownloadCompletedUnknownID(t *testing.T) {
 		t.Fatalf("ImportPath should not be called for unknown id, got %v", fake.importPathCalls)
 	}
 }
+
+func TestImportTargetsPrefersCompletedFiles(t *testing.T) {
+	t.Parallel()
+	got := importTargets("/downloads", []contracts.DownloadEventFile{
+		{Path: "Show/S01E01.mkv"},
+		{Path: "/downloads/Show/S01E02.mkv"},
+	})
+	want := []string{
+		"/downloads/Show/S01E01.mkv",
+		"/downloads/Show/S01E02.mkv",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+
+	fallback := importTargets("/downloads/Pack", nil)
+	if len(fallback) != 1 || fallback[0] != "/downloads/Pack" {
+		t.Fatalf("fallback got %v", fallback)
+	}
+}

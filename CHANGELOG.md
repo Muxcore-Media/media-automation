@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.10] — 2026-08-18
+
+### Fixed
+- On `download.completed`, import the torrent's **file paths** instead of the shared downloads root so each completion does not rescan every other release sitting in the watch dir.
 
 ## [0.1.9] — 2026-08-18
 

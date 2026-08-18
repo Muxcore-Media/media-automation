@@ -136,7 +136,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.9",
+		Version:        "0.1.10",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -770,22 +770,24 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		return
 	}
 
-	savePath := payload.SavePath
+	targets := importTargets(payload.SavePath, payload.Files)
 	// Import can take a long time (large copies); never block the event loop.
-	go func(histID, downloadID, savePath, now string) {
+	go func(histID, downloadID, now string, targets []string) {
 		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		_, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: savePath})
-		if err != nil {
-			slog.Warn("ImportPath failed", "download_id", downloadID, "path", savePath, "error", err)
-			if _, uerr := db.ExecContext(context.Background(),
-				`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-				"import_failed", now, histID,
-			); uerr != nil {
-				slog.Warn("mark import_failed", "id", histID, "error", uerr)
+		for _, path := range targets {
+			_, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+			if err != nil {
+				slog.Warn("ImportPath failed", "download_id", downloadID, "path", path, "error", err)
+				if _, uerr := db.ExecContext(context.Background(),
+					`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+					"import_failed", now, histID,
+				); uerr != nil {
+					slog.Warn("mark import_failed", "id", histID, "error", uerr)
+				}
+				m.publishImportFailed(downloadID, path, err.Error())
+				return
 			}
-			m.publishImportFailed(downloadID, savePath, err.Error())
-			return
 		}
 		if _, err := db.ExecContext(context.Background(),
 			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
@@ -793,7 +795,36 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		); err != nil {
 			slog.Warn("mark download completed", "id", histID, "error", err)
 		}
-	}(histID, payload.ID, savePath, now)
+	}(histID, payload.ID, now, targets)
+}
+
+// importTargets prefers completed torrent files so ImportPath does not rescan the
+// whole downloads directory (and re-attempt huge already-imported remuxes).
+func importTargets(savePath string, files []contracts.DownloadEventFile) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if !filepath.IsAbs(p) && strings.TrimSpace(savePath) != "" {
+			p = filepath.Join(savePath, p)
+		}
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	for _, f := range files {
+		add(f.Path)
+	}
+	if len(out) == 0 {
+		add(savePath)
+	}
+	return out
 }
 
 func (m *Module) syncTVSeriesWithRetry(seriesID string) {
