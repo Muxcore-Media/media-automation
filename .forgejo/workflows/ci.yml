@@ -13,11 +13,16 @@ jobs:
   test:
     runs-on: native
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-          cache: false
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          ver=1.26.5
+          mkdir -p "$HOME/.local"
+          if [ ! -x "$HOME/.local/go/bin/go" ] || ! "$HOME/.local/go/bin/go" version | grep -q "$ver"; then
+            curl -fsSL "https://go.dev/dl/go${ver}.linux-amd64.tar.gz" | tar -C "$HOME/.local" -xz
+          fi
+          echo "$HOME/.local/go/bin" >> "$GITHUB_PATH"
       - name: Fetch MuxCore modules from Forgejo origin
         run: |
           git config --global url."https://git.zem.systems/muxcore/".insteadOf "https://github.com/Muxcore-Media/"
@@ -26,11 +31,16 @@ jobs:
   build:
     runs-on: native
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-          cache: false
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          ver=1.26.5
+          mkdir -p "$HOME/.local"
+          if [ ! -x "$HOME/.local/go/bin/go" ] || ! "$HOME/.local/go/bin/go" version | grep -q "$ver"; then
+            curl -fsSL "https://go.dev/dl/go${ver}.linux-amd64.tar.gz" | tar -C "$HOME/.local" -xz
+          fi
+          echo "$HOME/.local/go/bin" >> "$GITHUB_PATH"
       - name: Fetch MuxCore modules from Forgejo origin
         run: |
           git config --global url."https://git.zem.systems/muxcore/".insteadOf "https://github.com/Muxcore-Media/"
