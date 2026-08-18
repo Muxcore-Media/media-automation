@@ -56,6 +56,7 @@ type Module struct {
 	stallAutoMode           bool
 	stallLoopMinutes        []int
 	keepStalledPartials     bool
+	downloadDir             string
 	indexerHoldUntil        time.Time
 	searchGap               time.Duration
 	wantedSearchLimit       int
@@ -135,6 +136,11 @@ func NewModule(cfg Config) *Module {
 		lv := strings.ToLower(strings.TrimSpace(v))
 		m.keepStalledPartials = lv == "true" || lv == "1" || lv == "on"
 	}
+	if v := strings.TrimSpace(os.Getenv("AUTOMATION_DOWNLOAD_DIR")); v != "" {
+		m.downloadDir = v
+	} else if v := strings.TrimSpace(os.Getenv("MVP_DOWNLOADS_DIR")); v != "" {
+		m.downloadDir = v
+	}
 	return m
 }
 
@@ -142,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.21",
+		Version:        "0.1.22",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",

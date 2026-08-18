@@ -377,6 +377,7 @@ func TestDispatchKeepPartialsSavePath(t *testing.T) {
 	m := newTestModule(t)
 	m.mu.Lock()
 	m.keepStalledPartials = true
+	m.downloadDir = "/data/downloads"
 	m.mu.Unlock()
 	fake := &fakeDownloaderClient{torrentID: "tor-partial"}
 	m.downloaderClient = fake
@@ -391,8 +392,9 @@ func TestDispatchKeepPartialsSavePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.lastSavePath != "partials/mv_550/btih_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("save path %q", fake.lastSavePath)
+	want := "/data/downloads/partials/mv_550/btih_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if fake.lastSavePath != want {
+		t.Fatalf("save path %q want %q", fake.lastSavePath, want)
 	}
 }
 
