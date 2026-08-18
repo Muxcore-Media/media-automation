@@ -624,6 +624,10 @@ func TestScoreTVReleaseBoost(t *testing.T) {
 	if wrong >= 0 {
 		t.Fatalf("wrong season pack should be rejected, boost=%d", wrong)
 	}
+	wrongEp := scoreTVReleaseBoost("When Calls the Heart S13E02 Up in Smoke 1080p WEBRip", 10, 0, 0, true, "standard")
+	if wrongEp >= 0 {
+		t.Fatalf("single episode must not satisfy a season pack search, boost=%d", wrongEp)
+	}
 	anime := scoreTVReleaseBoost("Anime - 150 [1080p]", 0, 0, 150, false, "anime")
 	if anime < 30 {
 		t.Fatalf("anime absolute boost too low: %d", anime)
