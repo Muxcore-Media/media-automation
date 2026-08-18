@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.29",
+		Version:        "0.1.30",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -689,8 +689,8 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 			}
 		case contracts.EventFileImported:
 			var payload contracts.FileImportedPayload
-			if err := json.Unmarshal(evt.Payload, &payload); err == nil && payload.OriginalPath != "" {
-				slog.Info("file imported event received", "title", payload.Title, "path", payload.DestinationPath)
+			if err := json.Unmarshal(evt.Payload, &payload); err == nil {
+				m.completeHistoryFromFileImported(context.Background(), payload)
 			}
 		case contracts.EventDownloadStarted, contracts.EventDownloadCompleted, contracts.EventDownloadFailed:
 			var payload contracts.DownloadEventPayload
@@ -815,6 +815,81 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		}
 		m.cleanupWantedPartials(wantedID, savePath)
 	}(histID, payload.ID, now, wantedID, payload.SavePath, targets)
+}
+
+func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contracts.FileImportedPayload) {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT h.id, h.wanted_item_id, COALESCE(h.save_path, ''),
+		       COALESCE(w.tmdb_id, 0), COALESCE(w.season_number, 0), COALESCE(w.episode_number, 0)
+		FROM download_history h
+		LEFT JOIN wanted_items w ON w.item_id = h.wanted_item_id
+		WHERE h.status IN ('import_failed', 'sent')
+	`)
+	if err != nil {
+		slog.Debug("query history for file imported", "error", err)
+		return
+	}
+	defer rows.Close()
+	type rec struct {
+		id, wantedID, savePath string
+		tmdb, season, episode  int
+	}
+	var hits []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.id, &r.wantedID, &r.savePath, &r.tmdb, &r.season, &r.episode); err != nil {
+			continue
+		}
+		if fileImportMatchesHistory(p, r.savePath, r.tmdb, r.season, r.episode) {
+			hits = append(hits, r)
+		}
+	}
+	if len(hits) == 0 {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range hits {
+		if _, err := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ? AND status IN ('import_failed', 'sent')`,
+			"completed", now, r.id,
+		); err != nil {
+			slog.Warn("mark history completed from file import", "id", r.id, "error", err)
+			continue
+		}
+		m.cleanupWantedPartials(r.wantedID, r.savePath)
+		slog.Info("history completed from file import", "id", r.id, "title", p.Title, "dest", p.DestinationPath)
+	}
+}
+
+func fileImportMatchesHistory(p contracts.FileImportedPayload, savePath string, tmdb, season, episode int) bool {
+	orig := filepath.Clean(strings.TrimSpace(p.OriginalPath))
+	dest := filepath.Clean(strings.TrimSpace(p.DestinationPath))
+	sp := filepath.Clean(strings.TrimSpace(savePath))
+	if sp != "" && sp != "." {
+		if orig != "." && (orig == sp || strings.HasPrefix(orig, sp+string(filepath.Separator))) {
+			return true
+		}
+		if dest != "." && (dest == sp || strings.HasPrefix(dest, sp+string(filepath.Separator))) {
+			return true
+		}
+	}
+	if episode >= 1 && tmdb > 0 && p.TMDBID == int32(tmdb) && p.SeasonNumber == int32(season) {
+		if p.EpisodeNumber == int32(episode) {
+			return true
+		}
+		for _, n := range p.EpisodeNumbers {
+			if n == int32(episode) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // importTargets prefers completed torrent files so ImportPath does not rescan the

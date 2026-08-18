@@ -83,6 +83,142 @@ func TestRetryImportFailedMarksCompleted(t *testing.T) {
 	}
 }
 
+func insertWantedTV(t *testing.T, m *Module, itemID string, tmdb, season, episode int) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.Exec(`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, series_id, created_at, updated_at)
+		VALUES (?, 'tv', ?, ?, 'Star Trek', 1966, ?, ?, 1, 1, 'ser_st', ?, ?)`,
+		"w_"+itemID, itemID, tmdb, season, episode, now, now)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFileImportCompletesImportFailedByPath(t *testing.T) {
+	m := newTestModule(t)
+	save := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertWantedTV(t, m, "item-st", 253, 3, 24)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(context.Background(), `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, save_path)
+		VALUES (?, ?, ?, ?, '', 0, 0, '', 'torrent', 'import_failed', ?, ?, ?, ?)`,
+		"dl_imp_path", "item-st", "guid-st", "Star Trek S03E24", now, now, "tor-st", save)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.completeHistoryFromFileImported(context.Background(), contracts.FileImportedPayload{
+		Title:           "Star Trek",
+		OriginalPath:    filepath.Join(save, "Star.Trek.S03E24.mkv"),
+		DestinationPath: "/library/Star Trek/Season 03/S03E24.mkv",
+	})
+	st, completedAt := historyStatus(t, m, "dl_imp_path")
+	if st != "completed" {
+		t.Fatalf("status=%q want completed", st)
+	}
+	if completedAt == "" {
+		t.Fatal("expected completed_at")
+	}
+}
+
+func TestFileImportCompletesImportFailedByEpisode(t *testing.T) {
+	m := newTestModule(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertWantedTV(t, m, "item-st-ep", 253, 3, 24)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(context.Background(), `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, save_path)
+		VALUES (?, ?, ?, ?, '', 0, 0, '', 'torrent', 'import_failed', ?, ?, ?, ?)`,
+		"dl_imp_ep", "item-st-ep", "guid-st-ep", "Star Trek S03E24", now, now, "tor-st-ep", "/downloads/other-show")
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.completeHistoryFromFileImported(context.Background(), contracts.FileImportedPayload{
+		Title:           "Star Trek",
+		TMDBID:          253,
+		SeasonNumber:    3,
+		EpisodeNumber:   24,
+		DestinationPath: "/library/Star Trek/Season 03/S03E24.mkv",
+	})
+	st, _ := historyStatus(t, m, "dl_imp_ep")
+	if st != "completed" {
+		t.Fatalf("status=%q want completed", st)
+	}
+}
+
+func TestFileImportDoesNotCompletePackFromOneEpisode(t *testing.T) {
+	m := newTestModule(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertWantedTV(t, m, "item-st-pack", 253, 3, 0)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(context.Background(), `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, save_path)
+		VALUES (?, ?, ?, ?, '', 0, 0, '', 'torrent', 'import_failed', ?, ?, ?, ?)`,
+		"dl_imp_pack", "item-st-pack", "guid-st-pack", "Star Trek S03", now, now, "tor-st-pack", "/downloads/pack")
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.completeHistoryFromFileImported(context.Background(), contracts.FileImportedPayload{
+		Title:           "Star Trek",
+		TMDBID:          253,
+		SeasonNumber:    3,
+		EpisodeNumber:   24,
+		DestinationPath: "/library/Star Trek/Season 03/S03E24.mkv",
+	})
+	st, _ := historyStatus(t, m, "dl_imp_pack")
+	if st != "import_failed" {
+		t.Fatalf("status=%q want import_failed (pack must not complete from one episode)", st)
+	}
+}
+
+func TestFileImportDoesNotCompleteWrongEpisode(t *testing.T) {
+	m := newTestModule(t)
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertWantedTV(t, m, "item-st-wrong", 253, 3, 24)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(context.Background(), `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, save_path)
+		VALUES (?, ?, ?, ?, '', 0, 0, '', 'torrent', 'sent', ?, ?, ?, ?)`,
+		"dl_imp_wrong", "item-st-wrong", "guid-st-wrong", "Star Trek S03E24", now, now, "tor-st-wrong", "/downloads/wrong")
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.completeHistoryFromFileImported(context.Background(), contracts.FileImportedPayload{
+		TMDBID:        253,
+		SeasonNumber:  3,
+		EpisodeNumber: 12,
+	})
+	st, _ := historyStatus(t, m, "dl_imp_wrong")
+	if st != "sent" {
+		t.Fatalf("status=%q want sent", st)
+	}
+}
+
+func TestFileImportMatchesHistory(t *testing.T) {
+	t.Parallel()
+	save := "/downloads/Star.Trek.S03E24"
+	pPath := contracts.FileImportedPayload{OriginalPath: save + "/file.mkv"}
+	if !fileImportMatchesHistory(pPath, save, 0, 0, 0) {
+		t.Fatal("path under save_path should match")
+	}
+	pEp := contracts.FileImportedPayload{TMDBID: 253, SeasonNumber: 3, EpisodeNumber: 24}
+	if !fileImportMatchesHistory(pEp, "/elsewhere", 253, 3, 24) {
+		t.Fatal("episode-grain TMDB match")
+	}
+	if fileImportMatchesHistory(pEp, "/elsewhere", 253, 3, 0) {
+		t.Fatal("pack episode 0 must not match TMDB+episode")
+	}
+	if fileImportMatchesHistory(pEp, "/elsewhere", 253, 3, 12) {
+		t.Fatal("wrong episode must not match")
+	}
+}
+
 func TestResolveExistingImportPathPrefersCwd(t *testing.T) {
 	dir := t.TempDir()
 	rel := filepath.Join("partials", "item1")

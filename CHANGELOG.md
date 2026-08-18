@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.30] — 2026-08-18
+
+### Fixed
+- `media.file.imported` completes matching `import_failed` / `sent` history (path under the torrent save dir, or TMDB + season + episode for episode-grain wanted rows) so a library copy does not stay stuck until the next ImportPath retry.
+
 ## [0.1.29] — 2026-08-18
 
 ### Fixed
