@@ -64,6 +64,7 @@ func (m *Module) migrateStallTables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE download_history ADD COLUMN infohash_v2 TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN save_path TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN files_fingerprint TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN import_paths TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate stall columns: %w", err)

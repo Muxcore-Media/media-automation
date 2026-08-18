@@ -155,7 +155,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.32",
+		Version:        "0.1.33",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -744,7 +744,8 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if eventType == contracts.EventDownloadStarted {
-		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files))
+		targets := importTargets(payload.SavePath, payload.Files)
+		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
 		return
 	}
 
@@ -796,6 +797,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	}
 
 	targets := importTargets(payload.SavePath, payload.Files)
+	m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
 	// Import can take a long time (large copies); never block the event loop.
 	go func(histID, downloadID, now, wantedID, savePath string, targets []string) {
 		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -899,20 +901,58 @@ func fileImportMatchesHistory(p contracts.FileImportedPayload, savePath string, 
 	return false
 }
 
+func joinSaveAndRelPath(savePath, file string) string {
+	savePath = filepath.Clean(strings.TrimSpace(savePath))
+	file = strings.TrimSpace(file)
+	if file == "" {
+		if savePath == "." {
+			return ""
+		}
+		return savePath
+	}
+	file = filepath.Clean(file)
+	if filepath.IsAbs(file) {
+		return file
+	}
+	if savePath == "" || savePath == "." {
+		return file
+	}
+	saveSlash := filepath.ToSlash(savePath)
+	fileSlash := filepath.ToSlash(file)
+	if fileSlash == saveSlash || strings.HasPrefix(fileSlash, saveSlash+"/") {
+		return file
+	}
+	parts := strings.Split(saveSlash, "/")
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "" {
+			continue
+		}
+		suffix := strings.Join(parts[i:], "/")
+		if fileSlash != suffix && !strings.HasPrefix(fileSlash, suffix+"/") {
+			continue
+		}
+		prefix := strings.Join(parts[:i], "/")
+		if prefix == "" {
+			if filepath.IsAbs(savePath) {
+				return filepath.Clean(filepath.Join(string(filepath.Separator), file))
+			}
+			return file
+		}
+		return filepath.Clean(filepath.Join(filepath.FromSlash(prefix), file))
+	}
+	return filepath.Clean(filepath.Join(savePath, file))
+}
+
 // importTargets prefers completed torrent files so ImportPath does not rescan the
 // whole downloads directory (and re-attempt huge already-imported remuxes).
 func importTargets(savePath string, files []contracts.DownloadEventFile) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	add := func(p string) {
-		p = strings.TrimSpace(p)
+		p = joinSaveAndRelPath(savePath, p)
 		if p == "" {
 			return
 		}
-		if !filepath.IsAbs(p) && strings.TrimSpace(savePath) != "" {
-			p = filepath.Join(savePath, p)
-		}
-		p = filepath.Clean(p)
 		if _, ok := seen[p]; ok {
 			return
 		}
@@ -923,7 +963,26 @@ func importTargets(savePath string, files []contracts.DownloadEventFile) []strin
 		add(f.Path)
 	}
 	if len(out) == 0 {
-		add(savePath)
+		add("")
+	}
+	return out
+}
+
+func encodeImportPaths(paths []string) string {
+	return strings.Join(paths, "\n")
+}
+
+func decodeImportPaths(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
 	}
 	return out
 }
