@@ -141,7 +141,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.15",
+		Version:        "0.1.16",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1263,6 +1263,7 @@ func (m *Module) searchQueuedItems() {
 	}
 
 	packs := m.activeSeasonPacks(context.Background())
+	grabbing := m.seriesWithGrabs(context.Background())
 
 	type wantedRow struct {
 		id, itemType, itemID, title, profileID, seriesType, seriesID, cleanRaw, fileAcquiredAt string
@@ -1291,6 +1292,11 @@ func (m *Module) searchQueuedItems() {
 		}
 		if r.itemType == "tv" && spansCoverSeason(packs[r.seriesID], int(r.seasonNum)) {
 			slog.Info("skip search: season pack already grabbed", "item", r.itemID, "series", r.seriesID, "season", r.seasonNum)
+			packSkipIDs = append(packSkipIDs, r.id)
+			continue
+		}
+		if skipSeasonZeroPlaceholder(r.itemType, int(r.seasonNum), int(r.epNum), r.seriesID, grabbing) {
+			slog.Info("skip search: season-0 placeholder already grabbing", "item", r.itemID, "series", r.seriesID)
 			packSkipIDs = append(packSkipIDs, r.id)
 			continue
 		}
@@ -1343,6 +1349,11 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 	}
 	if itemType == "tv" && m.seasonPackAlreadyGrabbed(ctx, seriesID, season) {
 		slog.Info("skip search: season pack already grabbed", "item", itemID, "series", seriesID, "season", season)
+		m.touchLastSearched(wantedID)
+		return
+	}
+	if skipSeasonZeroPlaceholder(itemType, season, episode, seriesID, m.seriesWithGrabs(ctx)) {
+		slog.Info("skip search: season-0 placeholder already grabbing", "item", itemID, "series", seriesID)
 		m.touchLastSearched(wantedID)
 		return
 	}

@@ -131,6 +131,42 @@ func TestSeasonPackSentAlsoCovers(t *testing.T) {
 	}
 }
 
+func TestSkipSeasonZeroPlaceholderWhenSeriesGrabbing(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	insertGrabbedPack(t, m, "ep_tos_s03e24", "tv_tos", "Star Trek S03E24 Turnabout Intruder 1080p", "sent", 3)
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: "tv", ItemID: "ep_tos_0_12", TmdbID: 253, Title: "Star Trek", Year: 1966,
+		SeasonNumber: 0, EpisodeNumber: 12, SeriesID: "tv_tos",
+	})
+	grabbing := m.seriesWithGrabs(ctx)
+	if !skipSeasonZeroPlaceholder("tv", 0, 12, "tv_tos", grabbing) {
+		t.Fatal("season-0 dummy should skip once the series is grabbing")
+	}
+	if skipSeasonZeroPlaceholder("tv", 0, 0, "tv_tos", grabbing) {
+		t.Fatal("season-0 pack row (episode 0) should still search")
+	}
+	if skipSeasonZeroPlaceholder("tv", 3, 1, "tv_tos", grabbing) {
+		t.Fatal("real S03E01 should still search")
+	}
+	if skipSeasonZeroPlaceholder("tv", 0, 12, "tv_other", grabbing) {
+		t.Fatal("other series must not skip")
+	}
+
+	var wantedID string
+	m.mu.RLock()
+	_ = m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'ep_tos_0_12'`).Scan(&wantedID)
+	m.mu.RUnlock()
+	idx := &countingIndexer{fakeIndexerClient: fakeIndexerClient{
+		results: []*indexerv1.SearchResult{{Guid: "g", Title: "Star Trek S03E24", DownloadUrl: "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff"}},
+	}}
+	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
+	m.searchAndStore(ctx, wantedID, "tv", "ep_tos_0_12", "Star Trek", 253, 1966, 0, 12, 0, "", "tv_tos", "", nil, true, 0, "")
+	if idx.n.Load() != 0 {
+		t.Fatalf("indexer searches=%d want 0", idx.n.Load())
+	}
+}
+
 func TestSingleEpisodeDoesNotCoverSiblings(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
