@@ -179,7 +179,8 @@ func releaseMatchesWanted(releaseTitle, itemType string, cleanTitles []string, y
 	relTok := strings.Fields(cleanRel)
 	checkYear := year
 	if itemType == "tv" {
-		// Sonarr: episode air years in the release are not the series year.
+		// Episode air years after Sxx (King of the Hill S15 2025) are not the series year.
+		// A year glued to the title (Franklin.2024.S01) *is* the series year — reject mismatches.
 		checkYear = 0
 	}
 	if !releaseYearCompatible(relTok, checkYear) {
@@ -195,6 +196,11 @@ func releaseMatchesWanted(releaseTitle, itemType string, cleanTitles []string, y
 			continue
 		}
 		if phraseMatchesRelease(relTok, wantTok) {
+			if itemType == "tv" && year > 0 {
+				if adj := titleAdjacentYear(relTok, wantTok); adj > 0 && adj != year {
+					continue
+				}
+			}
 			return true
 		}
 	}
@@ -216,6 +222,24 @@ func phraseMatchesRelease(rel, want []string) bool {
 		return false
 	}
 	return true
+}
+
+// titleAdjacentYear is the 19xx/20xx token immediately after the matched title
+// (Franklin.2024.S01). Zero if the next token is not a year.
+func titleAdjacentYear(rel, want []string) int {
+	idx := indexPhrase(rel, want)
+	if idx < 0 {
+		return 0
+	}
+	after := idx + len(want)
+	if after >= len(rel) {
+		return 0
+	}
+	y, err := strconv.Atoi(rel[after])
+	if err != nil || y < 1900 || y > 2099 {
+		return 0
+	}
+	return y
 }
 
 func indexPhrase(hay, needle []string) int {

@@ -104,6 +104,20 @@ func TestReleaseMatchesWantedMediaType(t *testing.T) {
 		t.Fatal("movie-shaped release should not satisfy a TV wanted item")
 	}
 
+	franklin := []string{cleanMatchTitle("Franklin")}
+	if releaseMatchesWanted("Franklin.2024.S01E07.HDR.2160p.WEB", "tv", franklin, 1997) {
+		t.Fatal("reboot year glued to title must not match 1997 Franklin")
+	}
+	if !releaseMatchesWanted("Franklin.S01E02.1080p.WEB", "tv", franklin, 1997) {
+		t.Fatal("classic Franklin episode without a series year should match")
+	}
+	if !releaseMatchesWanted("King.of.the.Hill.S15.Complete.1080p.WEBRip", "tv", []string{cleanMatchTitle("King of the Hill")}, 1997) {
+		t.Fatal("later-season pack without a title year should match the 1997 series")
+	}
+	if releaseMatchesWanted("paddington.bear.1989.s01e01.720p.web", "tv", []string{cleanMatchTitle("Paddington Bear")}, 1976) {
+		t.Fatal("1989 Paddington must not match the 1976 series")
+	}
+
 	fc := []string{cleanMatchTitle("Fight Club")}
 	if releaseMatchesWanted("Fight.Club.S01E01.HDTV", "movie", fc, 1999) {
 		t.Fatal("Radarr rejects TV tokens for movies")

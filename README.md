@@ -29,7 +29,7 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 - **Protocol delay profiles** — waits before grab using seeded `delay_profiles` (default: torrent 15m, usenet 0)
 - **Per-series overrides** — optional `delay_minutes` plus preferred/ignored release groups (`series_overrides_json` setting or `AUTOMATION_SERIES_OVERRIDES_JSON`)
 - **Multi-indexer search** — discovers **all** modules advertising capability `indexer`, searches them in parallel, merges results, dedupes by GUID (or download URL), then scores and limits
-- **Download dispatch** — sends selected releases to a downloader module. A season pack that is already `sent` or `completed` is not AddTorrent'd again; sibling episodes of the covered season skip indexer search.
+- **Download dispatch** — sends selected releases to a downloader module. A season pack that is already `sent` or `completed` is not AddTorrent'd again; sibling episodes of the covered season skip indexer search. TV releases with a year glued to the title (`Franklin.2024`) must match the series year.
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
 - **Periodic RSS sync** — automatically searches for wanted items on an interval (default 15 minutes; mesh setting `rss_sync_minutes`)
 - **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`, `keep_stalled_partials`)
