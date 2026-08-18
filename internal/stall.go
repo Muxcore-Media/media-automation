@@ -199,12 +199,17 @@ func (m *Module) pickNextRelease(ctx context.Context, itemID string, loop int, r
 // completed that matches this GUID, magnet hash, URL, or exact title. Season
 // packs matching many episode wanted rows must not AddTorrent again — including
 // after the first copy finishes, when status is no longer sent.
-func (m *Module) existingDownloadID(ctx context.Context, guid, downloadURL, title string) string {
+// Failed/stalled copies also block for the current attempt loop so indexer spam
+// cannot re-dispatch the same release six times in one burst.
+func (m *Module) existingDownloadID(ctx context.Context, guid, downloadURL, title string, loop int) string {
 	m.mu.RLock()
 	db := m.db
 	m.mu.RUnlock()
 	if db == nil {
 		return ""
+	}
+	if loop < 1 {
+		loop = 1
 	}
 	key := releaseAttemptKey(guid, downloadURL)
 	id := parseMagnetIdentity(downloadURL)
@@ -215,17 +220,29 @@ func (m *Module) existingDownloadID(ctx context.Context, guid, downloadURL, titl
 	var downloadID string
 	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(download_id, '') FROM download_history
-		WHERE status IN ('sent', 'completed')
-		  AND (
-		    (? != '' AND guid = ?)
-		    OR (? != '' AND COALESCE(download_url, '') = ?)
-		    OR (? != '' AND lower(COALESCE(infohash, '')) = ?)
-		    OR (? != '' AND lower(COALESCE(infohash_v2, '')) = ?)
-		    OR (? != '' AND title = ?)
-		  )
-		ORDER BY CASE status WHEN 'sent' THEN 0 ELSE 1 END, COALESCE(sent_at, created_at) ASC
+		WHERE (
+		        status IN ('sent', 'completed')
+		        AND (
+		          (? != '' AND guid = ?)
+		          OR (? != '' AND COALESCE(download_url, '') = ?)
+		          OR (? != '' AND lower(COALESCE(infohash, '')) = ?)
+		          OR (? != '' AND lower(COALESCE(infohash_v2, '')) = ?)
+		          OR (? != '' AND title = ?)
+		        )
+		      )
+		   OR (
+		        status IN ('failed', 'stalled')
+		        AND COALESCE(attempt_loop, 1) >= ?
+		        AND (
+		          (? != '' AND guid = ?)
+		          OR (? != '' AND COALESCE(download_url, '') = ?)
+		          OR (? != '' AND title = ?)
+		        )
+		      )
+		ORDER BY CASE status WHEN 'sent' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END, COALESCE(sent_at, created_at) ASC
 		LIMIT 1
-	`, key, key, downloadURL, downloadURL, id.InfoHash, id.InfoHash, id.InfoHashV2, id.InfoHashV2, title, title).Scan(&downloadID)
+	`, key, key, downloadURL, downloadURL, id.InfoHash, id.InfoHash, id.InfoHashV2, id.InfoHashV2, title, title,
+		loop, key, key, downloadURL, downloadURL, title, title).Scan(&downloadID)
 	if err != nil {
 		return ""
 	}
@@ -236,7 +253,7 @@ func (m *Module) existingDownloadID(ctx context.Context, guid, downloadURL, titl
 }
 
 func (m *Module) releaseInFlight(ctx context.Context, guid, downloadURL, title string) bool {
-	return m.existingDownloadID(ctx, guid, downloadURL, title) != ""
+	return m.existingDownloadID(ctx, guid, downloadURL, title, 1) != ""
 }
 
 func (m *Module) advanceAttemptLoop(ctx context.Context, itemID string, loop int) int {

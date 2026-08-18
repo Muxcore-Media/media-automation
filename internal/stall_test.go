@@ -343,6 +343,71 @@ func TestReleaseInFlightMatchesCompletedSeasonPack(t *testing.T) {
 	}
 }
 
+func TestFailedReleaseNotRedispatchedSameLoop(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	title := "The New Adventures of Winnie the Pooh S02 1080p DSNP WEBRip AAC2 0 x264"
+	guid := "guid-pooh-s02"
+	url := "https://example.test/pooh-s02"
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop)
+		VALUES ('dl_pooh', 'ep_pooh_0_1', ?, ?, '', 0, 130, ?, 'torrent', 'failed', ?, ?, 'tor-pooh', 1)`,
+		guid, title, url, now, now)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeDownloaderClient{torrentID: "tor-should-not-add"}
+	m.downloaderClient = fake
+	for i := 0; i < 5; i++ {
+		disp, err := m.Dispatch(ctx, &autov1.DispatchRequest{
+			Guid:             guid,
+			Title:            title,
+			DownloadUrl:      url,
+			DownloadProtocol: "torrent",
+			ItemType:         "tv",
+			ItemId:           fmt.Sprintf("ep_pooh_0_%d", i+2),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if disp.GetDownloadId() != "tor-pooh" {
+			t.Fatalf("download_id=%q want tor-pooh (skip duplicate)", disp.GetDownloadId())
+		}
+	}
+	if fake.calls != 0 {
+		t.Fatalf("AddTorrent calls=%d want 0 for same failed GUID in loop 1", fake.calls)
+	}
+
+	now2 := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err = m.db.ExecContext(ctx, `
+		INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, attempt_loop, created_at, updated_at)
+		VALUES ('w_pooh_s02', 'tv', 'tv_pooh_s02', 2005, 'Pooh', 1988, 2, 0, 1, 1, 2, ?, ?)`,
+		now2, now2)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	disp, err := m.Dispatch(ctx, &autov1.DispatchRequest{
+		Guid:             guid,
+		Title:            title,
+		DownloadUrl:      url,
+		DownloadProtocol: "torrent",
+		ItemType:         "tv",
+		ItemId:           "tv_pooh_s02",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 1 {
+		t.Fatalf("loop 2 should retry failed GUID, AddTorrent calls=%d want 1 (id=%s)", fake.calls, disp.GetDownloadId())
+	}
+}
+
 func TestStallSettingsRoundTrip(t *testing.T) {
 	m := newTestModule(t)
 	if err := m.UpdateSetting("stall_timeout_minutes", "90"); err != nil {

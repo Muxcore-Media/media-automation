@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.28] — 2026-08-18
+
+### Fixed
+- The same GUID, magnet hash, URL, or title cannot be `AddTorrent`’d again in the current attempt loop after it already failed or stalled. Dummy wanted rows were bursting the same Winnie the Pooh pack six times in a few seconds.
+
 ## [0.1.27] — 2026-08-18
 
 ### Fixed
