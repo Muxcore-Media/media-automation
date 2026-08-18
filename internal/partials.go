@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
 )
 
 func (m *Module) maybeMergeMagnet(ctx context.Context, itemID string, loop int, results []scoredRelease, best *scoredRelease) string {
@@ -52,6 +54,99 @@ func (m *Module) dispatchSavePath(ctx context.Context, itemID string, downloadUR
 		}
 	}
 	return partialSavePath(itemID, ident)
+}
+
+func resolveExistingImportPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	var cands []string
+	if cwd, err := os.Getwd(); err == nil {
+		cands = append(cands, filepath.Join(cwd, p))
+	}
+	for _, env := range []string{"MVP_DOWNLOADS_DIR", "AUTOMATION_DOWNLOAD_DIR"} {
+		if d := strings.TrimSpace(os.Getenv(env)); d != "" {
+			cands = append(cands, filepath.Join(d, p))
+		}
+	}
+	for _, c := range cands {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return p
+}
+
+func (m *Module) retryImportFailed(ctx context.Context) {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, COALESCE(download_id, ''), COALESCE(save_path, ''), COALESCE(wanted_item_id, '')
+		FROM download_history
+		WHERE status = 'import_failed'
+		LIMIT 20
+	`)
+	if err != nil {
+		return
+	}
+	type failed struct {
+		id, downloadID, savePath, wantedID string
+	}
+	var recs []failed
+	for rows.Next() {
+		var r failed
+		if err := rows.Scan(&r.id, &r.downloadID, &r.savePath, &r.wantedID); err != nil {
+			continue
+		}
+		recs = append(recs, r)
+	}
+	rows.Close()
+	if len(recs) == 0 {
+		return
+	}
+	if err := m.ensureScanner(ctx); err != nil {
+		slog.Debug("retry import_failed: scanner unavailable", "error", err)
+		return
+	}
+	client := m.getScannerClient()
+	if client == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, rec := range recs {
+		path := resolveExistingImportPath(rec.savePath)
+		if path == "" {
+			continue
+		}
+		impCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+		cancel()
+		if err != nil {
+			slog.Warn("retry ImportPath failed", "id", rec.id, "path", path, "error", err)
+			continue
+		}
+		if resp.GetFilesImported() == 0 && resp.GetFilesFound() == 0 {
+			slog.Debug("retry ImportPath found nothing", "id", rec.id, "path", path)
+			continue
+		}
+		if _, uerr := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"completed", now, rec.id,
+		); uerr != nil {
+			slog.Warn("mark retried import completed", "id", rec.id, "error", uerr)
+			continue
+		}
+		m.cleanupWantedPartials(rec.wantedID, path)
+		slog.Info("retried import succeeded", "id", rec.id, "title_id", rec.wantedID, "imported", resp.GetFilesImported(), "skipped", resp.GetFilesSkipped())
+	}
 }
 
 func (m *Module) keptSavePath(ctx context.Context, itemID string, id magnetIdentity) string {

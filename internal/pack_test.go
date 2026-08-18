@@ -134,14 +134,14 @@ func TestSeasonPackSentAlsoCovers(t *testing.T) {
 func TestSkipSeasonZeroPlaceholderWhenSeriesGrabbing(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
-	insertGrabbedPack(t, m, "ep_tos_s03e24", "tv_tos", "Star Trek S03E24 Turnabout Intruder 1080p", "sent", 3)
+	insertGrabbedPack(t, m, "ep_tos_s03e24", "tv_tos", "Star Trek S03E24 Turnabout Intruder 1080p", "import_failed", 3)
 	m.upsertWanted(ctx, wantedEntry{
 		ItemType: "tv", ItemID: "ep_tos_0_12", TmdbID: 253, Title: "Star Trek", Year: 1966,
 		SeasonNumber: 0, EpisodeNumber: 12, SeriesID: "tv_tos",
 	})
 	grabbing := m.seriesWithGrabs(ctx)
 	if !skipSeasonZeroPlaceholder("tv", 0, 12, "tv_tos", grabbing) {
-		t.Fatal("season-0 dummy should skip once the series is grabbing")
+		t.Fatal("season-0 dummy should skip once the series is grabbing (including import_failed)")
 	}
 	if skipSeasonZeroPlaceholder("tv", 0, 0, "tv_tos", grabbing) {
 		t.Fatal("season-0 pack row (episode 0) should still search")

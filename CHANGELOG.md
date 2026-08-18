@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.18] — 2026-08-18
+
+### Fixed
+- Retry `import_failed` history on each RSS cycle (before library sync) so a later scanner watch-dir fix can complete a grab already on disk.
+- Season-0 placeholders also skip search when the series has a `stalled` or `import_failed` grab, not only `sent`/`completed`.
+
 ## [0.1.17] — 2026-08-18
 
 ### Fixed

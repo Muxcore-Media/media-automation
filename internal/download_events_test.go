@@ -2,6 +2,8 @@ package internal
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -53,6 +55,53 @@ func historyStatus(t *testing.T, m *Module, histID string) (status, completedAt 
 		t.Fatalf("query status: %v", err)
 	}
 	return status, completedAt
+}
+
+func TestRetryImportFailedMarksCompleted(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+	save := t.TempDir()
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, save_path)
+		VALUES (?, ?, ?, ?, '', 0, 0, '', 'torrent', 'import_failed', ?, ?, ?, ?)`,
+		"dl_retry_1", "item-retry", "guid-retry", "Star Trek S03E24", now, now, "tor-retry", save)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeScannerClient{}
+	m.testScannerClient = fake
+	m.retryImportFailed(ctx)
+	if len(fake.importPathCalls) != 1 || fake.importPathCalls[0] != save {
+		t.Fatalf("ImportPath calls: %v want [%q]", fake.importPathCalls, save)
+	}
+	st, _ := historyStatus(t, m, "dl_retry_1")
+	if st != "completed" {
+		t.Fatalf("status=%q want completed", st)
+	}
+}
+
+func TestResolveExistingImportPathPrefersCwd(t *testing.T) {
+	dir := t.TempDir()
+	rel := filepath.Join("partials", "item1")
+	full := filepath.Join(dir, rel)
+	if err := os.MkdirAll(full, 0755); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	got := resolveExistingImportPath(rel)
+	if got != full {
+		t.Fatalf("got %q want %q", got, full)
+	}
 }
 
 func TestDownloadCompletedImportsPath(t *testing.T) {
