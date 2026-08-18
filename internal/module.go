@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.24",
+		Version:        "0.1.25",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -880,18 +880,21 @@ type wantedEntry struct {
 func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 	seen := make(map[string]struct{})
 	moviesOK, tvOK := false, false
-	if _, err := m.syncWantedMovies(ctx, seen); err != nil {
+	moviesN, tvN := 0, 0
+	var err error
+	if moviesN, err = m.syncWantedMovies(ctx, seen); err != nil {
 		slog.Debug("sync missing movies", "error", err)
 	} else {
 		moviesOK = true
 	}
-	if _, err := m.syncWantedTV(ctx, "", seen); err != nil {
+	if tvN, err = m.syncWantedTV(ctx, "", seen); err != nil {
 		slog.Debug("sync missing episodes", "error", err)
 	} else {
 		tvOK = true
 	}
 	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK)
 	m.pruneSeasonZeroEpisodeDummies(ctx)
+	slog.Info("wanted library sync upserted", "movies", moviesN, "tv", tvN, "movies_ok", moviesOK, "tv_ok", tvOK)
 }
 
 func (m *Module) syncWantedMovies(ctx context.Context, seen map[string]struct{}) (int, error) {
@@ -1029,7 +1032,7 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 	if m.db == nil {
 		return
 	}
-	rows, err := m.db.QueryContext(ctx, `SELECT item_type, item_id FROM wanted_items WHERE missing = 1`)
+	rows, err := m.db.QueryContext(ctx, `SELECT item_type, item_id, season_number, episode_number FROM wanted_items WHERE missing = 1`)
 	if err != nil {
 		return
 	}
@@ -1037,13 +1040,18 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 	var toDelete [][2]string
 	for rows.Next() {
 		var itemType, itemID string
-		if err := rows.Scan(&itemType, &itemID); err != nil {
+		var season, episode int
+		if err := rows.Scan(&itemType, &itemID, &season, &episode); err != nil {
 			continue
 		}
 		if itemType == "movie" && !moviesOK {
 			continue
 		}
 		if itemType == "tv" && !tvOK {
+			continue
+		}
+		// Series-pack requests (season 0 / episode 0) are not ListMissing rows.
+		if itemType == "tv" && season == 0 && episode == 0 && !strings.Contains(itemID, ":S0:pack") {
 			continue
 		}
 		if _, ok := seen[itemType+":"+itemID]; !ok {
@@ -1061,7 +1069,8 @@ func (m *Module) pruneSeasonZeroEpisodeDummies(ctx context.Context) {
 	if m.db == nil {
 		return
 	}
-	res, err := m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = 'tv' AND season_number = 0 AND episode_number >= 1`)
+	res, err := m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = 'tv' AND (
+		(season_number = 0 AND episode_number >= 1) OR item_id LIKE '%:S0:pack')`)
 	if err != nil {
 		slog.Debug("prune season-0 dummy wanted rows", "error", err)
 		return
@@ -1879,7 +1888,11 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	if wantPack || episode > 0 || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
-			scored[i].Score += scoreTVReleaseBoost(scored[i].Title, season, episode, absolute, wantPack, seriesType)
+			boost := scoreTVReleaseBoost(scored[i].Title, season, episode, absolute, wantPack, seriesType)
+			if boost < 0 {
+				continue
+			}
+			scored[i].Score += boost
 			if scored[i].Score > 0 {
 				filtered = append(filtered, scored[i])
 			}
@@ -1988,18 +2001,29 @@ func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bo
 		if reSeasonPackTitle.MatchString(name) {
 			boost += 50
 		}
+	} else if seriesType == "anime" && absolute > 0 {
+		if !animeAbsoluteInTitle(name, absolute) {
+			return -200
+		}
+		boost += 40
 	} else if episode > 0 {
 		if _, _, isPack := packSeasonsCovered(name); isPack {
 			return -200
 		}
-	}
-	if seriesType == "anime" && absolute > 0 {
-		absStr := strconv.Itoa(absolute)
-		if strings.Contains(name, absStr) || strings.Contains(name, fmt.Sprintf("[%d]", absolute)) || strings.Contains(strings.ToUpper(name), fmt.Sprintf("EP%03d", absolute)) {
-			boost += 40
+		s, e, ok := parseSingleEpisode(name)
+		if !ok || s != season || e != episode {
+			return -200
 		}
 	}
 	return boost
+}
+
+func animeAbsoluteInTitle(name string, absolute int) bool {
+	if absolute < 1 {
+		return false
+	}
+	absStr := strconv.Itoa(absolute)
+	return strings.Contains(name, absStr) || strings.Contains(name, fmt.Sprintf("[%d]", absolute)) || strings.Contains(strings.ToUpper(name), fmt.Sprintf("EP%03d", absolute))
 }
 
 func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest) (*automationv1.DispatchResponse, error) {

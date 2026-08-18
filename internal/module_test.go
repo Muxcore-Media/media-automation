@@ -704,6 +704,22 @@ func TestScoreTVReleaseBoost(t *testing.T) {
 	if epVsPack >= 0 {
 		t.Fatalf("episode wanted row must not take a season pack, boost=%d", epVsPack)
 	}
+	wrongEpNum := scoreTVReleaseBoost("Star Trek S03E24 Turnabout Intruder 1080p", 3, 12, 0, false, "standard")
+	if wrongEpNum >= 0 {
+		t.Fatalf("S03E12 wanted must not take S03E24, boost=%d", wrongEpNum)
+	}
+	matchEp := scoreTVReleaseBoost("Star Trek S03E12 1080p WEB", 3, 12, 0, false, "standard")
+	if matchEp < 0 {
+		t.Fatalf("matching S03E12 must not be rejected, boost=%d", matchEp)
+	}
+	noEp := scoreTVReleaseBoost("Star Trek 1080p WEB", 3, 12, 0, false, "standard")
+	if noEp >= 0 {
+		t.Fatalf("episode wanted must reject titles with no SxxExx, boost=%d", noEp)
+	}
+	animeMiss := scoreTVReleaseBoost("Anime - 012 [1080p]", 0, 0, 150, false, "anime")
+	if animeMiss >= 0 {
+		t.Fatalf("anime must require absolute 150 in title, boost=%d", animeMiss)
+	}
 	anime := scoreTVReleaseBoost("Anime - 150 [1080p]", 0, 0, 150, false, "anime")
 	if anime < 30 {
 		t.Fatalf("anime absolute boost too low: %d", anime)

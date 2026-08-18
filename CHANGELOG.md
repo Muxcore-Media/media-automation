@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.25] — 2026-08-18
+
+### Fixed
+- Episode-grain searches only grab a title whose parsed `SxxExx` matches the wanted season and episode (`S03E12` will not take `S03E24`). A −200 grain penalty is a hard reject, not a score that quality can still outrun. Anime requires the absolute episode in the title.
+
 ## [0.1.24] — 2026-08-18
 
 ### Fixed
