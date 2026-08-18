@@ -2,11 +2,15 @@ package internal
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	"github.com/Muxcore-Media/core/pkg/contracts"
+	autov1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
 )
 
 func TestParseStallLoopMinutes(t *testing.T) {
@@ -197,6 +201,56 @@ func TestReapImmediateErrorStatus(t *testing.T) {
 	}
 }
 
+func TestReleaseInFlightMatchesSharedSeasonPack(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	magnet := "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=BB.Remux"
+	title := "Breaking Bad (2008) S01-S05 1080p BluRay REMUX Dual Audio [Hindi+Eng] ~ RemuxDoc"
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, infohash)
+		VALUES ('dl_pack', 'ep_s04e01', 'guid-remux', ?, '', 0, 270, ?, 'torrent', 'sent', ?, ?, 'tor-pack', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')`,
+		title, magnet, now, now)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !m.releaseInFlight(ctx, "guid-remux", magnet, title) {
+		t.Fatal("same guid should be in-flight")
+	}
+	if !m.releaseInFlight(ctx, "other-guid", magnet, "other title") {
+		t.Fatal("same magnet hash should be in-flight")
+	}
+	if !m.releaseInFlight(ctx, "other-guid", "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", title) {
+		t.Fatal("same title should be in-flight")
+	}
+	if m.releaseInFlight(ctx, "other-guid", "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "Different.S01E01") {
+		t.Fatal("unrelated release should not be in-flight")
+	}
+
+	fake := &fakeDownloaderClient{torrentID: "tor-should-not-add"}
+	m.downloaderClient = fake
+	disp, err := m.Dispatch(ctx, &autov1.DispatchRequest{
+		Guid:             "guid-remux-ep2",
+		Title:            title,
+		DownloadUrl:      magnet,
+		DownloadProtocol: "torrent",
+		ItemType:         "tv",
+		ItemId:           "ep_s04e02",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disp.GetDownloadId() != "tor-pack" {
+		t.Fatalf("download_id=%q want tor-pack", disp.GetDownloadId())
+	}
+	if fake.calls != 0 {
+		t.Fatalf("AddTorrent calls=%d want 0", fake.calls)
+	}
+}
+
 func TestStallSettingsRoundTrip(t *testing.T) {
 	m := newTestModule(t)
 	if err := m.UpdateSetting("stall_timeout_minutes", "90"); err != nil {
@@ -211,6 +265,9 @@ func TestStallSettingsRoundTrip(t *testing.T) {
 	if err := m.UpdateSetting("stall_loop_minutes", "nope"); err == nil {
 		t.Fatal("expected invalid CSV to fail")
 	}
+	if err := m.UpdateSetting("keep_stalled_partials", "true"); err != nil {
+		t.Fatal(err)
+	}
 	defs := m.Settings()
 	got := map[string]string{}
 	for _, d := range defs {
@@ -218,5 +275,184 @@ func TestStallSettingsRoundTrip(t *testing.T) {
 	}
 	if got["stall_timeout_minutes"] != "90" || got["stall_auto_mode"] != "false" || got["stall_loop_minutes"] != "30,120,720" {
 		t.Fatalf("settings: %+v", got)
+	}
+	if got["keep_stalled_partials"] != "true" {
+		t.Fatalf("keep_stalled_partials=%q", got["keep_stalled_partials"])
+	}
+}
+
+func TestReapStalledKeepsPartials(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.mu.Lock()
+	m.stallAutoMode = false
+	m.stallTimeoutMinutes = 60
+	m.keepStalledPartials = true
+	m.mu.Unlock()
+
+	sent := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at)
+		VALUES ('dl_keep', 'mv_keep', 'guid-keep', 'Stuck', '', 0, 10, 'magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'torrent', 'sent', ?, ?, 'tor-keep', 1, 0, ?)`,
+		sent, sent, sent)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeDownloaderClient{
+		torrents: map[string]*cdlv1.TorrentInfo{
+			"tor-keep": {Id: "tor-keep", Status: "downloading", Downloaded: 0},
+		},
+	}
+	m.downloaderClient = fake
+	m.reapStalledDownloads(ctx, time.Now().UTC())
+	if len(fake.removed) != 1 || fake.removed[0] != "tor-keep" {
+		t.Fatalf("removed %v", fake.removed)
+	}
+	if len(fake.deleteFiles) != 1 || fake.deleteFiles[0] {
+		t.Fatalf("DeleteFiles=%v want false", fake.deleteFiles)
+	}
+}
+
+func TestMaybeMergeMagnetLoop2(t *testing.T) {
+	m := newTestModule(t)
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	results := []scoredRelease{
+		{GUID: "a", Title: "A", DownloadURL: "magnet:?xt=urn:btih:" + hash + "&tr=udp://a.example:80/announce", Score: 200},
+		{GUID: "b", Title: "B", DownloadURL: "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&tr=udp://b.example:80/announce", Score: 150},
+		{GUID: "c", Title: "C", DownloadURL: "magnet:?xt=urn:btih:" + hash + "&tr=udp://c.example:80/announce", Score: 100},
+	}
+	got := m.maybeMergeMagnet(context.Background(), "mv_x", 2, results, &results[0])
+	if !strings.Contains(got, "udp://a.example:80/announce") || !strings.Contains(got, "udp://c.example:80/announce") {
+		t.Fatalf("merged trackers: %s", got)
+	}
+	if strings.Contains(got, "bbbbbbbb") {
+		t.Fatalf("should not merge B: %s", got)
+	}
+	loop1 := m.maybeMergeMagnet(context.Background(), "mv_x", 1, results, &results[0])
+	if strings.Contains(loop1, "udp://c.example:80/announce") {
+		t.Fatalf("loop 1 should not merge without kept partial: %s", loop1)
+	}
+}
+
+func TestDispatchKeepPartialsSavePath(t *testing.T) {
+	m := newTestModule(t)
+	m.mu.Lock()
+	m.keepStalledPartials = true
+	m.mu.Unlock()
+	fake := &fakeDownloaderClient{torrentID: "tor-partial"}
+	m.downloaderClient = fake
+	_, err := m.Dispatch(context.Background(), &autov1.DispatchRequest{
+		Guid:             "guid-a",
+		Title:            "A",
+		DownloadUrl:      "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=A",
+		DownloadProtocol: "torrent",
+		ItemType:         "movie",
+		ItemId:           "mv_550",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastSavePath != "partials/mv_550/btih_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("save path %q", fake.lastSavePath)
+	}
+}
+
+func TestDownloadStartedRecordsIdentity(t *testing.T) {
+	m := newTestModule(t)
+	insertHistoryWithDownloadID(t, m, "dl_start", "tor-start")
+	m.handleDownloadLifecycleEvent(context.Background(), contracts.EventDownloadStarted, contracts.DownloadEventPayload{
+		ID:       "tor-start",
+		InfoHash: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		SavePath: "/dl/partials/item-1/pending_x",
+		Files:    []contracts.DownloadEventFile{{Path: "f.bin", Size: 100}},
+	})
+	var hash, path, fp, status string
+	m.mu.RLock()
+	err := m.db.QueryRowContext(context.Background(),
+		`SELECT COALESCE(infohash,''), COALESCE(save_path,''), COALESCE(files_fingerprint,''), status FROM download_history WHERE id = ?`,
+		"dl_start",
+	).Scan(&hash, &path, &fp, &status)
+	m.mu.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("hash %q", hash)
+	}
+	if path != "/dl/partials/item-1/pending_x" {
+		t.Fatalf("path %q", path)
+	}
+	if fp != "100" {
+		t.Fatalf("fp %q", fp)
+	}
+	if status != "sent" {
+		t.Fatalf("status %q", status)
+	}
+}
+
+func TestCleanupWantedPartials(t *testing.T) {
+	m := newTestModule(t)
+	root := t.TempDir()
+	keep := filepath.Join(root, "partials", "mv1", "btih_keep")
+	drop := filepath.Join(root, "partials", "mv1", "btih_drop")
+	if err := os.MkdirAll(keep, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(drop, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(drop, "x"), []byte("n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.Exec(`
+		INSERT INTO download_history (id, wanted_item_id, guid, title, status, created_at, save_path)
+		VALUES ('k', 'mv1', 'g1', 'K', 'completed', ?, ?),
+		       ('d', 'mv1', 'g2', 'D', 'stalled', ?, ?)`,
+		now, keep, now, drop)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cleanupWantedPartials("mv1", keep)
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("keep dir removed: %v", err)
+	}
+	if _, err := os.Stat(drop); !os.IsNotExist(err) {
+		t.Fatalf("drop dir still present: %v", err)
+	}
+}
+
+func TestKeptSavePathReusedOnDispatch(t *testing.T) {
+	m := newTestModule(t)
+	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	now := time.Now().UTC().Format(time.RFC3339)
+	kept := "partials/mv_reuse/btih_" + hash
+	m.mu.Lock()
+	_, err := m.db.Exec(`
+		INSERT INTO download_history (id, wanted_item_id, guid, title, status, created_at, infohash, save_path)
+		VALUES ('old', 'mv_reuse', 'g-old', 'Old', 'stalled', ?, ?, ?)`,
+		now, hash, kept)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeDownloaderClient{torrentID: "tor-reuse"}
+	m.downloaderClient = fake
+	_, err = m.Dispatch(context.Background(), &autov1.DispatchRequest{
+		Guid:        "g-new",
+		Title:       "New",
+		DownloadUrl: "magnet:?xt=urn:btih:" + hash,
+		ItemId:      "mv_reuse",
+		ItemType:    "movie",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastSavePath != kept {
+		t.Fatalf("save path %q want %q", fake.lastSavePath, kept)
 	}
 }

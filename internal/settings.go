@@ -19,6 +19,7 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 	stallMins := m.stallTimeoutMinutes
 	stallAuto := m.stallAutoMode
 	stallLoops := stallLoopCSV(m.stallLoopMinutes)
+	keepPartials := m.keepStalledPartials
 	m.mu.RUnlock()
 	overridesJSON, _ := m.listSeriesOverridesJSON(context.Background())
 	return []contracts.SettingDef{
@@ -77,6 +78,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Group:       "Stall",
 		},
 		{
+			Key:         "keep_stalled_partials",
+			Label:       "Keep stalled partials",
+			Type:        contracts.SettingTypeBool,
+			Default:     "false",
+			Value:       strconv.FormatBool(keepPartials),
+			Description: "Do not delete torrent data when a grab stalls or fails. Uses extra disk until a complete copy is imported, then leftover partial dirs for that item are removed. Lets later loops resume matching hashes and share verified on-disk bytes.",
+			Group:       "Stall",
+		},
+		{
 			Key:         "series_overrides_json",
 			Label:       "Per-series overrides (JSON)",
 			Type:        contracts.SettingTypeString,
@@ -130,6 +140,11 @@ func (m *Module) updateSetting(key, value string) error {
 		}
 		m.mu.Lock()
 		m.stallLoopMinutes = loops
+		m.mu.Unlock()
+		return nil
+	case "keep_stalled_partials":
+		m.mu.Lock()
+		m.keepStalledPartials = value == "true" || value == "1" || value == "on"
 		m.mu.Unlock()
 		return nil
 	case "series_overrides_json", "AUTOMATION_SERIES_OVERRIDES_JSON":
