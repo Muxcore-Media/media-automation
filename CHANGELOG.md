@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.34] — 2026-08-18
+
+### Fixed
+- Leftover `{cwd}/partials` (vault `mvp/partials`) is moved into `AUTOMATION_DOWNLOAD_DIR/partials` on start. After a successful import, `cleanupWantedPartials` also prunes abandoned dirs under the cwd leftover, not only siblings of the kept watch-dir path.
+
 ## [0.1.33] — 2026-08-18
 
 ### Fixed

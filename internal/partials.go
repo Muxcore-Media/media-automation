@@ -99,6 +99,136 @@ func (m *Module) absoluteDownloadPath(p string) string {
 	return filepath.Join(root, p)
 }
 
+func sameFilesystemPath(a, b string) bool {
+	a = filepath.Clean(strings.TrimSpace(a))
+	b = filepath.Clean(strings.TrimSpace(b))
+	if a == "" || b == "" || a == "." || b == "." {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && aa == bb
+}
+
+func (m *Module) partialScanRoots() []string {
+	seen := map[string]struct{}{}
+	var roots []string
+	add := func(p string) {
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "" || p == "." {
+			return
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if _, ok := seen[p]; ok {
+			return
+		}
+		seen[p] = struct{}{}
+		roots = append(roots, p)
+	}
+	m.mu.RLock()
+	add(m.downloadDir)
+	m.mu.RUnlock()
+	if cwd, err := os.Getwd(); err == nil {
+		add(cwd)
+	}
+	for _, env := range []string{"MVP_DOWNLOADS_DIR", "AUTOMATION_DOWNLOAD_DIR"} {
+		add(os.Getenv(env))
+	}
+	return roots
+}
+
+func (m *Module) existingPartialCandidates(p string) []string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return nil
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(c string) {
+		c = filepath.Clean(strings.TrimSpace(c))
+		if c == "" || c == "." {
+			return
+		}
+		if abs, err := filepath.Abs(c); err == nil {
+			c = abs
+		}
+		if _, ok := seen[c]; ok {
+			return
+		}
+		if _, err := os.Stat(c); err != nil {
+			return
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	if filepath.IsAbs(p) {
+		add(p)
+		return out
+	}
+	for _, root := range m.partialScanRoots() {
+		add(filepath.Join(root, p))
+	}
+	return out
+}
+
+// relocateStrayCwdPartials moves leftover {cwd}/partials into the scanner watch dir
+// when AUTOMATION_DOWNLOAD_DIR is a different tree. Duplicate names already under
+// the watch dir are deleted from cwd.
+func (m *Module) relocateStrayCwdPartials() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	m.mu.RLock()
+	root := strings.TrimSpace(m.downloadDir)
+	m.mu.RUnlock()
+	if root == "" {
+		return
+	}
+	stray := filepath.Join(cwd, "partials")
+	dest := filepath.Join(root, "partials")
+	if sameFilesystemPath(stray, dest) {
+		return
+	}
+	fi, err := os.Stat(stray)
+	if err != nil || !fi.IsDir() {
+		return
+	}
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		slog.Warn("create watch-dir partials", "path", dest, "error", err)
+		return
+	}
+	entries, err := os.ReadDir(stray)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		src := filepath.Join(stray, e.Name())
+		dst := filepath.Join(dest, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			slog.Info("removing stray cwd partial already under watch dir", "path", src)
+			if err := os.RemoveAll(src); err != nil {
+				slog.Warn("remove stray cwd partial", "path", src, "error", err)
+			}
+			continue
+		}
+		if err := os.Rename(src, dst); err != nil {
+			slog.Warn("move stray cwd partial into watch dir", "from", src, "to", dst, "error", err)
+			continue
+		}
+		slog.Info("moved stray cwd partial into watch dir", "from", src, "to", dst)
+	}
+	leftover, err := os.ReadDir(stray)
+	if err == nil && len(leftover) == 0 {
+		_ = os.Remove(stray)
+	}
+}
+
 func resolveExistingImportPath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
@@ -276,28 +406,66 @@ func (m *Module) cleanupWantedPartials(wantedID, keepPath string) {
 		return
 	}
 	defer rows.Close()
+	keepCands := m.existingPartialCandidates(keepPath)
 	keepPath = filepath.Clean(strings.TrimSpace(keepPath))
-	var parent string
-	if keepPath != "" && keepPath != "." {
-		parent = filepath.Dir(keepPath)
+	if keepPath != "" && keepPath != "." && filepath.IsAbs(keepPath) {
+		if abs, err := filepath.Abs(keepPath); err == nil {
+			keepPath = abs
+		}
+		keepCands = append([]string{keepPath}, keepCands...)
+	} else if absKeep := m.absoluteDownloadPath(keepPath); absKeep != "" {
+		keepCands = append(keepCands, absKeep)
+	}
+	isKeep := func(p string) bool {
+		for _, k := range keepCands {
+			if sameFilesystemPath(p, k) {
+				return true
+			}
+		}
+		return false
+	}
+	removePartial := func(p string) {
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "" || p == "." || isKeep(p) {
+			return
+		}
+		if !strings.Contains(filepath.ToSlash(p), "/partials/") {
+			return
+		}
+		if err := os.RemoveAll(p); err != nil {
+			slog.Debug("cleanup partial dir", "path", p, "error", err)
+		}
 	}
 	for rows.Next() {
 		var p string
 		if err := rows.Scan(&p); err != nil {
 			continue
 		}
-		p = filepath.Clean(strings.TrimSpace(p))
-		if p == "" || p == "." || p == keepPath {
+		cands := m.existingPartialCandidates(p)
+		if len(cands) == 0 {
+			removePartial(m.absoluteDownloadPath(p))
 			continue
 		}
-		if parent != "" && filepath.Dir(p) != parent {
+		for _, c := range cands {
+			removePartial(c)
+		}
+	}
+	itemKey := sanitizePartialToken(wantedID)
+	if itemKey == "" {
+		itemKey = wantedID
+	}
+	for _, root := range m.partialScanRoots() {
+		itemDir := filepath.Join(root, "partials", itemKey)
+		entries, err := os.ReadDir(itemDir)
+		if err != nil {
 			continue
 		}
-		if !strings.Contains(filepath.ToSlash(p), "/partials/") {
-			continue
+		for _, e := range entries {
+			removePartial(filepath.Join(itemDir, e.Name()))
 		}
-		if err := os.RemoveAll(p); err != nil {
-			slog.Debug("cleanup partial dir", "path", p, "error", err)
+		leftover, err := os.ReadDir(itemDir)
+		if err == nil && len(leftover) == 0 {
+			_ = os.Remove(itemDir)
 		}
 	}
 }

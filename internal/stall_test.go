@@ -653,6 +653,103 @@ func TestCleanupWantedPartials(t *testing.T) {
 	}
 }
 
+func TestCleanupWantedPartialsDropsCwdLeftover(t *testing.T) {
+	m := newTestModule(t)
+	base := t.TempDir()
+	cwd := filepath.Join(base, "mvp")
+	dl := filepath.Join(base, "downloads")
+	keep := filepath.Join(dl, "partials", "mv1", "btih_keep")
+	drop := filepath.Join(cwd, "partials", "mv1", "btih_drop")
+	if err := os.MkdirAll(keep, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(drop, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(drop, "x"), []byte("n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	m.mu.Lock()
+	m.downloadDir = dl
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = m.db.Exec(`
+		INSERT INTO download_history (id, wanted_item_id, guid, title, status, created_at, save_path)
+		VALUES ('k', 'mv1', 'g1', 'K', 'completed', ?, ?),
+		       ('d', 'mv1', 'g2', 'D', 'stalled', ?, ?)`,
+		now, keep, now, "partials/mv1/btih_drop")
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cleanupWantedPartials("mv1", keep)
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("keep dir removed: %v", err)
+	}
+	if _, err := os.Stat(drop); !os.IsNotExist(err) {
+		t.Fatalf("cwd leftover still present: %v", err)
+	}
+}
+
+func TestRelocateStrayCwdPartials(t *testing.T) {
+	m := newTestModule(t)
+	base := t.TempDir()
+	cwd := filepath.Join(base, "mvp")
+	dl := filepath.Join(base, "downloads")
+	unique := filepath.Join(cwd, "partials", "item-unique")
+	dupSrc := filepath.Join(cwd, "partials", "item-dup")
+	dupDst := filepath.Join(dl, "partials", "item-dup")
+	for _, d := range []string{unique, dupSrc, dupDst} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(unique, "a"), []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dupSrc, "old"), []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dupDst, "keep"), []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	m.mu.Lock()
+	m.downloadDir = dl
+	m.mu.Unlock()
+	m.relocateStrayCwdPartials()
+	moved := filepath.Join(dl, "partials", "item-unique")
+	if _, err := os.Stat(filepath.Join(moved, "a")); err != nil {
+		t.Fatalf("unique dir not moved: %v", err)
+	}
+	if _, err := os.Stat(unique); !os.IsNotExist(err) {
+		t.Fatalf("unique src still present")
+	}
+	if _, err := os.Stat(dupSrc); !os.IsNotExist(err) {
+		t.Fatalf("duplicate cwd leftover still present")
+	}
+	if _, err := os.Stat(filepath.Join(dupDst, "keep")); err != nil {
+		t.Fatalf("watch-dir copy removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "partials")); !os.IsNotExist(err) {
+		t.Fatalf("empty cwd partials still present")
+	}
+}
+
 func TestKeptSavePathReusedOnDispatch(t *testing.T) {
 	m := newTestModule(t)
 	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
