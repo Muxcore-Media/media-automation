@@ -251,6 +251,43 @@ func TestReleaseInFlightMatchesSharedSeasonPack(t *testing.T) {
 	}
 }
 
+func TestReleaseInFlightMatchesCompletedSeasonPack(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	title := "King.of.the.Hill.S15.Complete.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir"
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+		VALUES ('dl_koth', 'ep_s15e01', 'guid-koth', ?, '', 0, 145, 'magnet:?xt=urn:btih:cccccccccccccccccccccccccccccccccccccccc', 'torrent', 'completed', ?, ?, 'tor-koth')`,
+		title, now, now)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.releaseInFlight(ctx, "guid-koth-ep2", "magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd", title) {
+		t.Fatal("completed pack title should still count as grabbed")
+	}
+	fake := &fakeDownloaderClient{torrentID: "tor-should-not-add"}
+	m.downloaderClient = fake
+	disp, err := m.Dispatch(ctx, &autov1.DispatchRequest{
+		Guid:        "guid-koth-ep2",
+		Title:       title,
+		DownloadUrl: "magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd",
+		ItemType:    "tv",
+		ItemId:      "ep_s15e02",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disp.GetDownloadId() != "tor-koth" {
+		t.Fatalf("download_id=%q want tor-koth", disp.GetDownloadId())
+	}
+	if fake.calls != 0 {
+		t.Fatalf("AddTorrent calls=%d want 0", fake.calls)
+	}
+}
+
 func TestStallSettingsRoundTrip(t *testing.T) {
 	m := newTestModule(t)
 	if err := m.UpdateSetting("stall_timeout_minutes", "90"); err != nil {
