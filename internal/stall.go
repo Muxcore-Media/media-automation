@@ -332,7 +332,12 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 		progressAt = now
 	}
 
-	snap, ok := m.torrentSnapshot(ctx, r.downloadID)
+	snap, ok, missing := m.torrentSnapshot(ctx, r.downloadID)
+	if missing {
+		m.removeInflightTorrent(ctx, r.downloadID)
+		m.finishInflight(ctx, db, r, "stalled", "downloader no longer has torrent")
+		return
+	}
 	if ok {
 		switch strings.ToLower(strings.TrimSpace(snap.status)) {
 		case "error", "failed":
@@ -421,9 +426,9 @@ func (m *Module) downloaderClientLocked() cdlv1.DownloaderServiceClient {
 	return m.downloaderClient
 }
 
-func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torrentSnap, bool) {
+func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torrentSnap, bool, bool) {
 	if downloadID == "" {
-		return torrentSnap{}, false
+		return torrentSnap{}, false, true
 	}
 	client := m.downloaderClientLocked()
 	if client == nil {
@@ -431,13 +436,16 @@ func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torren
 		client = m.downloaderClientLocked()
 	}
 	if client == nil {
-		return torrentSnap{}, false
+		return torrentSnap{}, false, false
 	}
 	snapCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	resp, err := client.GetTorrent(snapCtx, &cdlv1.GetTorrentRequest{TorrentId: downloadID})
-	if err != nil || resp.GetTorrent() == nil {
-		return torrentSnap{}, false
+	if err != nil {
+		return torrentSnap{}, false, isTorrentMissingErr(err)
+	}
+	if resp.GetTorrent() == nil {
+		return torrentSnap{}, false, true
 	}
 	t := resp.GetTorrent()
 	return torrentSnap{
@@ -445,5 +453,13 @@ func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torren
 		status:     t.GetStatus(),
 		savePath:   t.GetSavePath(),
 		name:       t.GetName(),
-	}, true
+	}, true, false
+}
+
+func isTorrentMissingErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "unknown torrent")
 }
