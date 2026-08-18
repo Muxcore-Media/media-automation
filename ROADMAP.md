@@ -12,4 +12,4 @@
 
 ## Remaining
 
-- [ ] Per-series override of delay / release groups
+- [x] Per-series override of delay / release groups
