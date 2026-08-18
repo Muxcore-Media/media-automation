@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.14] — 2026-08-18
+
+### Fixed
+- Skip indexer search for other wanted rows of the same series when a sent/completed pack title already covers that season (`S15.Complete`, `S01-S05`). Single-episode titles do not block siblings.
+
 ## [0.1.13] — 2026-08-18
 
 ### Fixed

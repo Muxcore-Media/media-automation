@@ -29,10 +29,10 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 - **Protocol delay profiles** — waits before grab using seeded `delay_profiles` (default: torrent 15m, usenet 0)
 - **Per-series overrides** — optional `delay_minutes` plus preferred/ignored release groups (`series_overrides_json` setting or `AUTOMATION_SERIES_OVERRIDES_JSON`)
 - **Multi-indexer search** — discovers **all** modules advertising capability `indexer`, searches them in parallel, merges results, dedupes by GUID (or download URL), then scores and limits
-- **Download dispatch** — sends selected releases to a downloader module
+- **Download dispatch** — sends selected releases to a downloader module. A season pack that is already `sent` or `completed` is not AddTorrent'd again; sibling episodes of the covered season skip indexer search.
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
 - **Periodic RSS sync** — automatically searches for wanted items on an interval (default 15 minutes; mesh setting `rss_sync_minutes`)
-- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`)
+- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`, `keep_stalled_partials`)
 - **Download history** — tracks all dispatched downloads with status
 - **Stall / blacklist** — a torrent with no byte progress is given up after a configurable stall timeout (default 3h, or auto loops of 1h then 6h). That GUID is blacklisted for the current attempt loop so the next search dispatches the next-best release. After every available torrent has been tried, a new loop retries them with a longer stall.
 - **Import on complete** — on `download.completed`, asks media-scanner to `ImportPath` the torrent save path and marks history complete (or `import_failed`); `download.failed` marks history failed. On `media.*.file_added`, marks the wanted item owned (or removes it at cutoff / when upgrades disabled).
@@ -65,6 +65,7 @@ For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or w
 | `AUTOMATION_STALL_TIMEOUT_MINUTES` | `180` | No-progress timeout when auto mode is off |
 | `AUTOMATION_STALL_AUTO_MODE` | `true` | Escalate stall timeout after each full pass of available torrents |
 | `AUTOMATION_STALL_LOOP_MINUTES` | `60,360` | Comma-separated stall minutes per attempt loop (auto mode) |
+| `AUTOMATION_KEEP_STALLED_PARTIALS` | `false` | Keep stalled/failed torrent data and resume matching hashes |
 
 ---
 
