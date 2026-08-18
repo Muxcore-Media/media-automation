@@ -40,9 +40,6 @@ func packSeasonsCovered(title string) (lo, hi int, ok bool) {
 	if reSingleEpisode.MatchString(title) {
 		return 0, 0, false
 	}
-	if !reSeasonPackTitle.MatchString(title) {
-		return 0, 0, false
-	}
 	if m := reSeasonInTitle.FindStringSubmatch(title); len(m) >= 2 {
 		s, err := strconv.Atoi(m[1])
 		if err == nil && s > 0 {
@@ -157,9 +154,7 @@ func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
 }
 
 func skipSeasonZeroPlaceholder(itemType string, season, episode int, seriesID string, grabbing map[string]struct{}) bool {
-	if itemType != "tv" || season != 0 || episode < 1 || strings.TrimSpace(seriesID) == "" {
-		return false
-	}
-	_, ok := grabbing[seriesID]
-	return ok
+	_ = grabbing
+	_ = seriesID
+	return itemType == "tv" && season == 0 && episode >= 1
 }

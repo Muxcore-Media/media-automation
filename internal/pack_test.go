@@ -51,6 +51,12 @@ func TestPackSeasonsCovered(t *testing.T) {
 			lo:    3, hi: 3, ok: true,
 			covers: []int{3},
 		},
+		{
+			title: "Marvel's Agents of S H I E L D 2013 S05 1080p BDrip x265",
+			lo:    5, hi: 5, ok: true,
+			covers:   []int{5},
+			uncovers: []int{1, 4},
+		},
 	}
 	for _, tc := range cases {
 		lo, hi, ok := packSeasonsCovered(tc.title)
@@ -149,8 +155,8 @@ func TestSkipSeasonZeroPlaceholderWhenSeriesGrabbing(t *testing.T) {
 	if skipSeasonZeroPlaceholder("tv", 3, 1, "tv_tos", grabbing) {
 		t.Fatal("real S03E01 should still search")
 	}
-	if skipSeasonZeroPlaceholder("tv", 0, 12, "tv_other", grabbing) {
-		t.Fatal("other series must not skip")
+	if !skipSeasonZeroPlaceholder("tv", 0, 12, "tv_other", nil) {
+		t.Fatal("season-0 dummy should skip even with no grabbing series")
 	}
 
 	var wantedID string

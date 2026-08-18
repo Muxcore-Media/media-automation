@@ -142,7 +142,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.20",
+		Version:        "0.1.21",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1842,7 +1842,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	}
 
 	scored := m.scoreWithFormatsFallback(ctx, raw, query, cleanTitles, profileID, year, itemType)
-	if wantPack || (seriesType == "anime" && absolute > 0) {
+	if wantPack || episode > 0 || (seriesType == "anime" && absolute > 0) {
 		var filtered []scoredRelease
 		for i := range scored {
 			scored[i].Score += scoreTVReleaseBoost(scored[i].Title, season, episode, absolute, wantPack, seriesType)
@@ -1953,6 +1953,10 @@ func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bo
 		}
 		if reSeasonPackTitle.MatchString(name) {
 			boost += 50
+		}
+	} else if episode > 0 {
+		if _, _, isPack := packSeasonsCovered(name); isPack {
+			return -200
 		}
 	}
 	if seriesType == "anime" && absolute > 0 {
