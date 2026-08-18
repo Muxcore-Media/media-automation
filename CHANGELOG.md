@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.22] — 2026-08-18
+
+### Fixed
+- `keep_stalled_partials` save paths are absolute under `AUTOMATION_DOWNLOAD_DIR` / `MVP_DOWNLOADS_DIR` so torrents land in the scanner watch dir instead of `{cwd}/partials`.
+
 ## [0.1.21] — 2026-08-18
 
 ### Fixed

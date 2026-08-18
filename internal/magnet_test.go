@@ -98,3 +98,18 @@ func TestPartialSavePath(t *testing.T) {
 		t.Fatal("v2 identity")
 	}
 }
+
+func TestAbsoluteDownloadPathJoinsRoot(t *testing.T) {
+	m := &Module{downloadDir: "/data/downloads"}
+	got := m.absoluteDownloadPath("partials/mv_550/btih_abc")
+	if got != "/data/downloads/partials/mv_550/btih_abc" {
+		t.Fatalf("got %q", got)
+	}
+	if m.absoluteDownloadPath("/abs/already") != "/abs/already" {
+		t.Fatal("abs passthrough")
+	}
+	empty := &Module{}
+	if empty.absoluteDownloadPath("partials/x") != "partials/x" {
+		t.Fatal("no root keeps relative")
+	}
+}

@@ -41,7 +41,7 @@ func (m *Module) maybeMergeMagnet(ctx context.Context, itemID string, loop int, 
 func (m *Module) dispatchSavePath(ctx context.Context, itemID string, downloadURL, guid string) string {
 	id := parseMagnetIdentity(downloadURL)
 	if reuse := m.keptSavePath(ctx, itemID, id); reuse != "" {
-		return reuse
+		return m.absoluteDownloadPath(reuse)
 	}
 	if !m.keepStalledPartialsLocked() || strings.TrimSpace(itemID) == "" {
 		return ""
@@ -53,7 +53,24 @@ func (m *Module) dispatchSavePath(ctx context.Context, itemID string, downloadUR
 			ident = "pending_" + time.Now().UTC().Format("20060102T150405")
 		}
 	}
-	return partialSavePath(itemID, ident)
+	return m.absoluteDownloadPath(partialSavePath(itemID, ident))
+}
+
+func (m *Module) absoluteDownloadPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	m.mu.RLock()
+	root := strings.TrimSpace(m.downloadDir)
+	m.mu.RUnlock()
+	if root == "" {
+		return p
+	}
+	return filepath.Join(root, p)
 }
 
 func resolveExistingImportPath(p string) string {
