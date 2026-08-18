@@ -22,6 +22,7 @@ type fakeDownloaderClient struct {
 	torrents       map[string]*cdlv1.TorrentInfo
 	removed        []string
 	deleteFiles    []bool
+	getErr         error
 }
 
 func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorrentRequest, opts ...grpc.CallOption) (*cdlv1.AddTorrentResponse, error) {
@@ -36,6 +37,9 @@ func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorr
 }
 
 func (f *fakeDownloaderClient) GetTorrent(ctx context.Context, in *cdlv1.GetTorrentRequest, opts ...grpc.CallOption) (*cdlv1.GetTorrentResponse, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	if f.torrents == nil {
 		return nil, fmt.Errorf("torrent not found")
 	}

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.27] — 2026-08-18
+
+### Fixed
+- `sent` torrents whose download id is gone from the downloader (`GetTorrent` not found) stall immediately instead of waiting the stall timeout. Hours-old grabs after a downloader restart can move on. Transient RPC errors still wait for the timeout.
+
 ## [0.1.26] — 2026-08-18
 
 ### Added

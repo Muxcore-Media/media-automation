@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,6 +138,60 @@ func TestReapStalledNoProgress(t *testing.T) {
 	}
 	if m.hasInFlightDownload(ctx, "mv_stall") {
 		t.Fatal("stalled should clear in-flight")
+	}
+}
+
+func TestReapMissingTorrentFailsImmediately(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.mu.Lock()
+	m.stallAutoMode = false
+	m.stallTimeoutMinutes = 180
+	m.mu.Unlock()
+
+	sent := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at)
+		VALUES ('dl_gone', 'mv_gone', 'guid-gone', 'Ghost', '', 0, 10, 'magnet:?xt=urn:btih:gone', 'torrent', 'sent', ?, ?, 'tor-gone', 1, 0, ?)`,
+		sent, sent, sent)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.downloaderClient = &fakeDownloaderClient{torrents: map[string]*cdlv1.TorrentInfo{}}
+
+	m.reapStalledDownloads(ctx, time.Now().UTC())
+	status, _ := historyStatus(t, m, "dl_gone")
+	if status != "stalled" {
+		t.Fatalf("missing torrent should stall immediately, status=%q", status)
+	}
+}
+
+func TestReapTransientGetErrorWaitsTimeout(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.mu.Lock()
+	m.stallAutoMode = false
+	m.stallTimeoutMinutes = 180
+	m.mu.Unlock()
+
+	sent := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.ExecContext(ctx, `
+		INSERT INTO download_history (id, wanted_item_id, guid, title, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at)
+		VALUES ('dl_tmp', 'mv_tmp', 'guid-tmp', 'Flaky', 'sent', ?, ?, 'tor-tmp', 1, 0, ?)`,
+		sent, sent, sent)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.downloaderClient = &fakeDownloaderClient{getErr: fmt.Errorf("connection refused")}
+
+	m.reapStalledDownloads(ctx, time.Now().UTC())
+	status, _ := historyStatus(t, m, "dl_tmp")
+	if status != "sent" {
+		t.Fatalf("transient GetTorrent error should wait stall timeout, status=%q", status)
 	}
 }
 
