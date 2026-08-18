@@ -216,6 +216,47 @@ func TestSearchItemNoIndexer(t *testing.T) {
 	}
 }
 
+func TestSearchNowRPC(t *testing.T) {
+	m := newTestModule(t)
+	resp, err := m.SearchNow(context.Background(), &autov1.SearchNowRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GetStarted() {
+		t.Fatalf("started=false message=%q", resp.GetMessage())
+	}
+}
+
+func TestSearchNowIgnoresRecentLastSearched(t *testing.T) {
+	m := newTestModule(t)
+	recent := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
+	m.mu.Lock()
+	_, err := m.db.Exec(`
+		INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, last_searched, created_at, updated_at)
+		VALUES ('w_force', 'movie', 'mv_force', 550, 'Fight Club', 1999, 0, 0, 1, 1, ?, ?, ?)`,
+		recent, now, now)
+	m.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.searchQueuedItems(false)
+	var last string
+	if err := m.db.QueryRow(`SELECT COALESCE(last_searched,'') FROM wanted_items WHERE id = 'w_force'`).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last != recent {
+		t.Fatalf("rss skip should keep last_searched %q, got %q", recent, last)
+	}
+	m.searchQueuedItems(true)
+	if err := m.db.QueryRow(`SELECT COALESCE(last_searched,'') FROM wanted_items WHERE id = 'w_force'`).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last == recent {
+		t.Fatal("search-now should search despite a recent last_searched")
+	}
+}
+
 func TestDispatchNoDownloader(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()

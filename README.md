@@ -97,6 +97,14 @@ Score-based search across all discovered indexer modules (parallel fan-out, merg
 }
 ```
 
+### `SearchNow`
+Run one wanted-search pass immediately (same as RSS, but ignores the last-searched gap). Use after deploy instead of waiting `rss_sync_minutes`.
+
+```bash
+grpcurl -plaintext -d '{}' 127.0.0.1:9460 muxcore.automation.v1.AutomationService/SearchNow
+# or set the search_now setting to true (admin UI / mesh UpdateSetting)
+```
+
 ### `Dispatch`
 Send a selected release to the downloader.
 
