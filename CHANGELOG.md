@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.24] — 2026-08-18
+
+### Fixed
+- Do not create season-0 dummy wanted rows (`S00E12`). `AddToQueue` coerces them to a series pack (`episode == 0`); library sync skips TMDB specials; existing dummies are pruned on each RSS cycle.
+
 ## [0.1.23] — 2026-08-18
 
 ### Fixed

@@ -148,7 +148,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.23",
+		Version:        "0.1.24",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -891,6 +891,7 @@ func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 		tvOK = true
 	}
 	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK)
+	m.pruneSeasonZeroEpisodeDummies(ctx)
 }
 
 func (m *Module) syncWantedMovies(ctx context.Context, seen map[string]struct{}) (int, error) {
@@ -953,6 +954,11 @@ func (m *Module) syncWantedTV(ctx context.Context, seriesID string, seen map[str
 			return 0, err
 		}
 		for _, item := range resp.GetItems() {
+			if item.GetSeasonNumber() == 0 {
+				// TMDB specials (S00Exx) are not acquisition targets. Do not
+				// mark them seen so pruneWantedNotInLibraries can delete leftovers.
+				continue
+			}
 			if seen != nil {
 				seen["tv:"+item.GetEpisodeId()] = struct{}{}
 			}
@@ -972,7 +978,7 @@ func (m *Module) syncWantedTV(ctx context.Context, seriesID string, seen map[str
 
 	totalUpserted := 0
 	for k, b := range buckets {
-		if len(b.items) == 0 {
+		if len(b.items) == 0 || k.season == 0 {
 			continue
 		}
 		sample := b.items[0]
@@ -1049,8 +1055,29 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 	}
 }
 
+func (m *Module) pruneSeasonZeroEpisodeDummies(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return
+	}
+	res, err := m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = 'tv' AND season_number = 0 AND episode_number >= 1`)
+	if err != nil {
+		slog.Debug("prune season-0 dummy wanted rows", "error", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		slog.Info("pruned season-0 dummy wanted rows", "count", n)
+	}
+}
+
 func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
 	if e.ItemID == "" {
+		return
+	}
+	if isSeasonZeroEpisodeDummy(e.ItemType, int(e.SeasonNumber), int(e.EpisodeNumber)) {
+		slog.Debug("skip season-0 dummy wanted upsert", "item", e.ItemID, "title", e.Title)
 		return
 	}
 	if len(e.CleanTitles) == 0 {
@@ -1222,6 +1249,7 @@ func (m *Module) rssSync() {
 	start := time.Now()
 	slog.Info("rss cycle starting")
 	ctx := context.Background()
+	m.pruneSeasonZeroEpisodeDummies(ctx)
 	m.retryImportFailed(ctx)
 	m.searchQueuedItems()
 	slog.Info("rss search finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
@@ -2075,20 +2103,24 @@ func (m *Module) AddToQueue(ctx context.Context, req *automationv1.AddToQueueReq
 	if m.db == nil {
 		return nil, fmt.Errorf("not initialized")
 	}
+	season, episode, itemID := coerceTVWantedGrain(
+		req.GetItemType(), req.GetSeasonNumber(), req.GetEpisodeNumber(),
+		req.GetItemId(), req.GetSeriesId(),
+	)
 	m.upsertWanted(ctx, wantedEntry{
 		ItemType:         req.GetItemType(),
-		ItemID:           req.GetItemId(),
+		ItemID:           itemID,
 		TmdbID:           req.GetTmdbId(),
 		Title:            req.GetTitle(),
 		Year:             req.GetYear(),
-		SeasonNumber:     req.GetSeasonNumber(),
-		EpisodeNumber:    req.GetEpisodeNumber(),
+		SeasonNumber:     season,
+		EpisodeNumber:    episode,
 		QualityProfileID: req.GetQualityProfileId(),
 		AbsoluteNumber:   req.GetAbsoluteNumber(),
 		SeriesType:       req.GetSeriesType(),
 		SeriesID:         req.GetSeriesId(),
 	})
-	id := fmt.Sprintf("w_%s_%s", req.GetItemType(), req.GetItemId())
+	id := fmt.Sprintf("w_%s_%s", req.GetItemType(), itemID)
 	return &automationv1.AddToQueueResponse{QueueId: id}, nil
 }
 
