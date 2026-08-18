@@ -1695,7 +1695,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 }
 
 func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType string, limit int, profileID string, cleanTitles []string) []scoredRelease {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
 	clients, err := m.syncIndexers(ctx)
