@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.15] — 2026-08-18
+
+### Fixed
+- TV grabs whose **title is immediately followed by a year** must match the series year (`Franklin.2024` is not Franklin 1997; `paddington.bear.1989` is not Paddington Bear 1976). Years after `Sxx` (air dates) are still ignored.
+
 ## [0.1.14] — 2026-08-18
 
 ### Fixed
