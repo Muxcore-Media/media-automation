@@ -142,7 +142,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.19",
+		Version:        "0.1.20",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1217,10 +1217,12 @@ func (m *Module) rssSync() {
 	slog.Info("rss cycle starting")
 	ctx := context.Background()
 	m.retryImportFailed(ctx)
-	m.reapStalledDownloads(ctx, time.Now().UTC())
 	m.searchQueuedItems()
 	slog.Info("rss search finished", "elapsed", time.Since(start).Round(time.Millisecond).String())
 	go m.syncWantedFromLibrariesBackground()
+	reapCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	m.reapStalledDownloads(reapCtx, time.Now().UTC())
+	cancel()
 }
 
 func (m *Module) syncWantedFromLibrariesBackground() {

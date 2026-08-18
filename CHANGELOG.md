@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.20] — 2026-08-18
+
+### Fixed
+- RSS search runs **before** stall reap, and reap is capped at 20s. Vault has no downloader process; `FindByCapability("downloader")` blocked the cycle after `rss cycle starting` with zero skip/dispatch logs.
+
 ## [0.1.19] — 2026-08-18
 
 ### Fixed
