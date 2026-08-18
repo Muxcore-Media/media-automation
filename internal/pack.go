@@ -138,7 +138,7 @@ func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
 		SELECT DISTINCT COALESCE(w.series_id, '')
 		FROM download_history h
 		INNER JOIN wanted_items w ON w.item_id = h.wanted_item_id
-		WHERE h.status IN ('sent', 'completed')
+		WHERE h.status IN ('sent', 'completed', 'stalled', 'import_failed')
 		  AND w.item_type = 'tv'
 		  AND COALESCE(w.series_id, '') != ''
 	`)
