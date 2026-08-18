@@ -155,7 +155,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.34",
+		Version:        "0.1.35",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -746,8 +746,9 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if eventType == contracts.EventDownloadStarted {
-		targets := importTargets(payload.SavePath, payload.Files)
-		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
+		savePath := canonicalPartialSavePath(payload.SavePath, payload.InfoHash)
+		targets := importTargets(savePath, payload.Files)
+		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, savePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
 		return
 	}
 
@@ -798,8 +799,9 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		return
 	}
 
-	targets := importTargets(payload.SavePath, payload.Files)
-	m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, payload.SavePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
+	savePath := canonicalPartialSavePath(payload.SavePath, payload.InfoHash)
+	targets := importTargets(savePath, payload.Files)
+	m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, savePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
 	// Import can take a long time (large copies); never block the event loop.
 	go func(histID, downloadID, now, wantedID, savePath string, targets []string) {
 		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -825,7 +827,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 			slog.Warn("mark download completed", "id", histID, "error", err)
 		}
 		m.cleanupWantedPartials(wantedID, savePath)
-	}(histID, payload.ID, now, wantedID, payload.SavePath, targets)
+	}(histID, payload.ID, now, wantedID, savePath, targets)
 }
 
 func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contracts.FileImportedPayload) {
