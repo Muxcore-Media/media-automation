@@ -195,11 +195,11 @@ func (m *Module) pickNextRelease(ctx context.Context, itemID string, loop int, r
 	return nil
 }
 
-// inFlightDownloadID returns the downloader id of a torrent already sent or
+// existingDownloadID returns the downloader id of a torrent already sent or
 // completed that matches this GUID, magnet hash, URL, or exact title. Season
 // packs matching many episode wanted rows must not AddTorrent again — including
 // after the first copy finishes, when status is no longer sent.
-func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, title string) string {
+func (m *Module) existingDownloadID(ctx context.Context, guid, downloadURL, title string) string {
 	m.mu.RLock()
 	db := m.db
 	m.mu.RUnlock()
@@ -236,7 +236,7 @@ func (m *Module) inFlightDownloadID(ctx context.Context, guid, downloadURL, titl
 }
 
 func (m *Module) releaseInFlight(ctx context.Context, guid, downloadURL, title string) bool {
-	return m.inFlightDownloadID(ctx, guid, downloadURL, title) != ""
+	return m.existingDownloadID(ctx, guid, downloadURL, title) != ""
 }
 
 func (m *Module) advanceAttemptLoop(ctx context.Context, itemID string, loop int) int {

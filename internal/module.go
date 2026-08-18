@@ -141,7 +141,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.13",
+		Version:        "0.1.14",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -1262,6 +1262,8 @@ func (m *Module) searchQueuedItems() {
 		interval = 15 * time.Minute
 	}
 
+	packs := m.activeSeasonPacks(context.Background())
+
 	type wantedRow struct {
 		id, itemType, itemID, title, profileID, seriesType, seriesID, cleanRaw, fileAcquiredAt string
 		tmdbID, year, seasonNum, epNum, absNum, missing, currentScore                          int64
@@ -1275,6 +1277,7 @@ func (m *Module) searchQueuedItems() {
 		return
 	}
 	var batch []wantedRow
+	var packSkipIDs []string
 	now := time.Now()
 	for rows.Next() {
 		var r wantedRow
@@ -1286,12 +1289,20 @@ func (m *Module) searchQueuedItems() {
 		if skipWantedSearch(r.lastSearched, missing, upgrades, interval, now) {
 			continue
 		}
+		if r.itemType == "tv" && spansCoverSeason(packs[r.seriesID], int(r.seasonNum)) {
+			slog.Info("skip search: season pack already grabbed", "item", r.itemID, "series", r.seriesID, "season", r.seasonNum)
+			packSkipIDs = append(packSkipIDs, r.id)
+			continue
+		}
 		batch = append(batch, r)
 		if len(batch) >= limit {
 			break
 		}
 	}
 	_ = rows.Close()
+	for _, id := range packSkipIDs {
+		m.touchLastSearched(id)
+	}
 
 	for i, r := range batch {
 		if m.indexerOnHold() {
@@ -1328,6 +1339,11 @@ func skipWantedSearch(lastSearched string, missing, upgrades bool, minAge time.D
 func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, seriesID, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
 	if m.hasInFlightDownload(ctx, itemID) {
 		slog.Debug("skip search: in-flight download", "item", itemID)
+		return
+	}
+	if itemType == "tv" && m.seasonPackAlreadyGrabbed(ctx, seriesID, season) {
+		slog.Info("skip search: season pack already grabbed", "item", itemID, "series", seriesID, "season", season)
+		m.touchLastSearched(wantedID)
 		return
 	}
 
@@ -1923,8 +1939,8 @@ func scoreTVReleaseBoost(name string, season, episode, absolute int, wantPack bo
 }
 
 func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest) (*automationv1.DispatchResponse, error) {
-	if existing := m.inFlightDownloadID(ctx, req.GetGuid(), req.GetDownloadUrl(), req.GetTitle()); existing != "" {
-		slog.Info("skip duplicate in-flight release", "title", req.GetTitle(), "guid", req.GetGuid(), "id", existing)
+	if existing := m.existingDownloadID(ctx, req.GetGuid(), req.GetDownloadUrl(), req.GetTitle()); existing != "" {
+		slog.Info("skip duplicate already-grabbed release", "title", req.GetTitle(), "guid", req.GetGuid(), "id", existing)
 		return &automationv1.DispatchResponse{
 			DownloadId: existing,
 			Status:     "sent",
