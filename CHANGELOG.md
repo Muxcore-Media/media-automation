@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.39] — 2026-08-20
+
+### Added
+- On `download.completed` (and file-imported completion), immediately `RemoveTorrent(delete_files)` other in-flight grabs for the same wanted item and mark them `superseded`.
+
+## [0.1.38] — 2026-08-20
+
+### Fixed
+- `download.completed` import targets preserve `storage://…` URIs (mesh torrent assemble). `filepath.Clean` no longer collapses `storage://` into `storage:/`, so scanner `ImportPath` can stream from StorageService.
+
+## [0.1.37] — 2026-08-20
+
+### Added
+- Operator RPCs: `RemoveFromQueue`, `ListBlocklist` / `ClearBlocklist`, `ListDelayProfiles` / `UpsertDelayProfile`, `ListCutoffUnmet` for admin queue/blocklist/delay/cutoff UX.
+
 ## [0.1.36] — 2026-08-18
 
 ### Added

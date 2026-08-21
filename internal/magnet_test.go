@@ -99,6 +99,17 @@ func TestPartialSavePath(t *testing.T) {
 	}
 }
 
+func TestCanonicalPartialSavePathMeshPending(t *testing.T) {
+	ih := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	got := canonicalPartialSavePath("storage://torrent/pending", ih)
+	if got != "storage://torrent/"+ih {
+		t.Fatalf("got %q", got)
+	}
+	if canonicalPartialSavePath("storage://torrent/"+ih, ih) != "storage://torrent/"+ih {
+		t.Fatal("already hashed path unchanged")
+	}
+}
+
 func TestAbsoluteDownloadPathJoinsRoot(t *testing.T) {
 	m := &Module{downloadDir: "/data/downloads"}
 	got := m.absoluteDownloadPath("partials/mv_550/btih_abc")

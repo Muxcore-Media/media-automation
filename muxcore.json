@@ -1,7 +1,7 @@
 {
   "name": "Media Automation",
   "description": "Automation engine for media libraries \u2014 monitors wanted items, searches searchers, scores releases, and dispatches downloads",
-  "version": "0.1.36",
+  "version": "0.1.42",
   "author": "MuxCore",
   "roles": [
     "automation"
@@ -10,6 +10,12 @@
     "media.automation",
     "settings"
   ],
-  "contracts": [],
+  "contracts": [
+    {
+      "repo": "github.com/Muxcore-Media/contracts-automation",
+      "interface": "AutomationService",
+      "version": "v0.1.0"
+    }
+  ],
   "minCoreVersion": "0.4.0"
 }
