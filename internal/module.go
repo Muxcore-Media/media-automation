@@ -29,6 +29,7 @@ import (
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
+	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	eventsv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/events/v1"
@@ -77,6 +78,8 @@ type Module struct {
 	moviesClient     mgmntv1.MovieManagementServiceClient
 	tvConn           *grpc.ClientConn
 	tvClient         tvmgmtv1.TvManagementServiceClient
+	musicConn        *grpc.ClientConn
+	musicClient      musicv1.MusicManagementServiceClient
 	scannerConn      *grpc.ClientConn
 	scannerClient    scannerv1.ScannerServiceClient
 	// testScannerClient, when set, skips discovery and is used for ImportPath (tests).
@@ -156,7 +159,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.36",
+		Version:        "0.1.42",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -339,6 +342,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	}
 	if m.tvConn != nil {
 		m.tvConn.Close()
+	}
+	if m.musicConn != nil {
+		m.musicConn.Close()
 	}
 	if m.scannerConn != nil {
 		m.scannerConn.Close()
@@ -803,12 +809,16 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	savePath := canonicalPartialSavePath(payload.SavePath, payload.InfoHash)
 	targets := importTargets(savePath, payload.Files)
 	m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, savePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
+	// Stop competing grabs for the same wanted item as soon as one finishes.
+	m.dropSiblingDownloads(ctx, wantedID, payload.ID)
 	// Import can take a long time (large copies); never block the event loop.
 	go func(histID, downloadID, now, wantedID, savePath string, targets []string) {
-		impCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		impCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 		defer cancel()
+		var imported int32
 		for _, path := range targets {
-			_, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+			path = normalizeStorageURI(path)
+			resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
 			if err != nil {
 				slog.Warn("ImportPath failed", "download_id", downloadID, "path", path, "error", err)
 				if _, uerr := db.ExecContext(context.Background(),
@@ -820,6 +830,20 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 				m.publishImportFailed(downloadID, path, err.Error())
 				return
 			}
+			if resp != nil {
+				imported += resp.GetFilesImported()
+			}
+		}
+		if imported == 0 {
+			slog.Warn("ImportPath imported nothing", "download_id", downloadID, "targets", len(targets))
+			if _, uerr := db.ExecContext(context.Background(),
+				`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+				"import_failed", now, histID,
+			); uerr != nil {
+				slog.Warn("mark import_failed", "id", histID, "error", uerr)
+			}
+			m.publishImportFailed(downloadID, savePath, "imported 0 files")
+			return
 		}
 		if _, err := db.ExecContext(context.Background(),
 			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
@@ -827,6 +851,7 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		); err != nil {
 			slog.Warn("mark download completed", "id", histID, "error", err)
 		}
+		m.dropSiblingDownloads(context.Background(), wantedID, downloadID)
 		m.cleanupWantedPartials(wantedID, savePath)
 	}(histID, payload.ID, now, wantedID, savePath, targets)
 }
@@ -876,6 +901,7 @@ func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contract
 			slog.Warn("mark history completed from file import", "id", r.id, "error", err)
 			continue
 		}
+		m.dropSiblingDownloads(ctx, r.wantedID, "")
 		m.cleanupWantedPartials(r.wantedID, r.savePath)
 		slog.Info("history completed from file import", "id", r.id, "title", p.Title, "dest", p.DestinationPath)
 	}
@@ -906,9 +932,38 @@ func fileImportMatchesHistory(p contracts.FileImportedPayload, savePath string, 
 	return false
 }
 
+func isStorageURI(p string) bool {
+	p = strings.TrimSpace(p)
+	return strings.HasPrefix(p, "storage://") || strings.HasPrefix(p, "storage:/")
+}
+
+func normalizeStorageURI(p string) string {
+	p = strings.TrimSpace(p)
+	if strings.HasPrefix(p, "storage://") {
+		return p
+	}
+	// filepath.Clean collapses storage:// → storage:/
+	if strings.HasPrefix(p, "storage:/") {
+		return "storage://" + strings.TrimPrefix(p, "storage:/")
+	}
+	return p
+}
+
 func joinSaveAndRelPath(savePath, file string) string {
-	savePath = filepath.Clean(strings.TrimSpace(savePath))
-	file = strings.TrimSpace(file)
+	savePath = normalizeStorageURI(strings.TrimSpace(savePath))
+	file = normalizeStorageURI(strings.TrimSpace(file))
+	// Mesh StorageService URIs must not pass through filepath.Clean (collapses //).
+	if isStorageURI(file) {
+		return file
+	}
+	if isStorageURI(savePath) {
+		if file == "" {
+			return savePath
+		}
+		rel := strings.TrimPrefix(filepath.ToSlash(file), "/")
+		return strings.TrimRight(savePath, "/") + "/" + rel
+	}
+	savePath = filepath.Clean(savePath)
 	if file == "" {
 		if savePath == "." {
 			return ""
@@ -1025,8 +1080,8 @@ type wantedEntry struct {
 
 func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 	seen := make(map[string]struct{})
-	moviesOK, tvOK := false, false
-	moviesN, tvN := 0, 0
+	moviesOK, tvOK, musicOK := false, false, false
+	moviesN, tvN, musicN := 0, 0, 0
 	var err error
 	if moviesN, err = m.syncWantedMovies(ctx, seen); err != nil {
 		slog.Debug("sync missing movies", "error", err)
@@ -1038,9 +1093,14 @@ func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 	} else {
 		tvOK = true
 	}
-	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK)
+	if musicN, err = m.syncWantedMusic(ctx, seen); err != nil {
+		m.logMusicSync(0, false, err)
+	} else {
+		musicOK = true
+	}
+	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK, musicOK)
 	m.pruneSeasonZeroEpisodeDummies(ctx)
-	slog.Info("wanted library sync upserted", "movies", moviesN, "tv", tvN, "movies_ok", moviesOK, "tv_ok", tvOK)
+	slog.Info("wanted library sync upserted", "movies", moviesN, "tv", tvN, "music", musicN, "movies_ok", moviesOK, "tv_ok", tvOK, "music_ok", musicOK)
 }
 
 func (m *Module) syncWantedMovies(ctx context.Context, seen map[string]struct{}) (int, error) {
@@ -1169,8 +1229,8 @@ func preferSeasonPack(missingCount int, seriesType string) bool {
 	return seasonPackEligible(missingCount) && seriesType != "anime"
 }
 
-func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK bool) {
-	if !moviesOK && !tvOK {
+func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK, musicOK bool) {
+	if !moviesOK && !tvOK && !musicOK {
 		return
 	}
 	m.mu.Lock()
@@ -1194,6 +1254,9 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 			continue
 		}
 		if itemType == "tv" && !tvOK {
+			continue
+		}
+		if itemType == "music" && !musicOK {
 			continue
 		}
 		// Series-pack requests (season 0 / episode 0) are not ListMissing rows.
@@ -1237,7 +1300,7 @@ func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
 	}
 	if len(e.CleanTitles) == 0 {
 		sid := e.SeriesID
-		if e.ItemType == "movie" {
+		if e.ItemType == "movie" || e.ItemType == "music" {
 			sid = ""
 		}
 		e.CleanTitles = m.fetchCleanTitles(ctx, e.ItemType, e.ItemID, sid, e.Title)
@@ -1727,10 +1790,12 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 				continue
 			}
 			resp, err := fc.ScoreRelease(ctx, &formatsv1.ScoreReleaseRequest{
-				Title:     r.GetTitle(),
-				Size:      r.GetSize(),
-				Seeders:   r.GetSeeders(),
-				ProfileId: profileID,
+				Title:       r.GetTitle(),
+				Size:        r.GetSize(),
+				Seeders:     r.GetSeeders(),
+				ProfileId:   profileID,
+				Category:    itemType, // "movie" | "tv" — selects Radarr vs Sonarr TRaSH formats
+				SubCategory: r.GetSubCategory(),
 			})
 			if err != nil {
 				continue
@@ -2038,6 +2103,8 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		searchType = "movie"
 	case "tv":
 		searchType = "tv"
+	case "music":
+		searchType = "music"
 	}
 
 	maxLimit := int32(limit)

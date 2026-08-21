@@ -365,6 +365,30 @@ func TestJoinSaveAndRelPathNoDoubleJoin(t *testing.T) {
 	}
 }
 
+func TestJoinSaveAndRelPathStorageURI(t *testing.T) {
+	t.Parallel()
+	uri := "storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files/Show.S01E01.mkv"
+	got := joinSaveAndRelPath("storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", uri)
+	if got != uri {
+		t.Fatalf("file uri: %q", got)
+	}
+	got = joinSaveAndRelPath("storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	if got != "storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("save only: %q", got)
+	}
+	got = joinSaveAndRelPath("storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "files/a.mkv")
+	want := "storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files/a.mkv"
+	if got != want {
+		t.Fatalf("rel join: %q want %q", got, want)
+	}
+	targets := importTargets("storage://torrent/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", []contracts.DownloadEventFile{
+		{Path: uri},
+	})
+	if len(targets) != 1 || targets[0] != uri {
+		t.Fatalf("importTargets: %v", targets)
+	}
+}
+
 func TestDownloadStartedPersistsAbsoluteImportPaths(t *testing.T) {
 	m := newTestModule(t)
 	insertHistoryWithDownloadID(t, m, "dl_paths", "tor-paths")

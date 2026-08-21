@@ -3,12 +3,14 @@ package internal
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
 )
 
@@ -235,6 +237,12 @@ func canonicalPartialSavePath(savePath, infoHash string) string {
 	if savePath == "" || infoHash == "" {
 		return savePath
 	}
+	if savePath == "storage://torrent/pending" || strings.HasSuffix(savePath, "/pending") {
+		if len(infoHash) == 40 {
+			return "storage://torrent/" + infoHash
+		}
+		return savePath
+	}
 	clean := filepath.Clean(savePath)
 	base := filepath.Base(clean)
 	if !strings.HasPrefix(base, "pending_") {
@@ -254,6 +262,9 @@ func resolveExistingImportPath(p string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
+	}
+	if strings.HasPrefix(p, "storage://") {
+		return p
 	}
 	if filepath.IsAbs(p) {
 		return p
@@ -327,7 +338,7 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 			if path == "" {
 				continue
 			}
-			impCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			impCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 			resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
 			cancel()
 			if err != nil {
@@ -335,7 +346,11 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 				continue
 			}
 			if resp.GetFilesImported() == 0 && resp.GetFilesFound() == 0 {
-				slog.Debug("retry ImportPath found nothing", "id", rec.id, "path", path)
+				slog.Info("retry ImportPath found nothing", "id", rec.id, "path", path)
+				continue
+			}
+			if resp.GetFilesImported() == 0 {
+				slog.Warn("retry ImportPath imported nothing", "id", rec.id, "path", path, "found", resp.GetFilesFound(), "skipped", resp.GetFilesSkipped())
 				continue
 			}
 			imported = true
@@ -355,6 +370,68 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 		m.cleanupWantedPartials(rec.wantedID, used)
 		slog.Info("retried import succeeded", "id", rec.id, "title_id", rec.wantedID, "path", used)
 	}
+}
+
+// retryImportHistoryID retries ImportPath for one download_history row (import_failed or stalled).
+func (m *Module) retryImportHistoryID(ctx context.Context, historyID string) (int, error) {
+	historyID = strings.TrimSpace(historyID)
+	if historyID == "" {
+		return 0, fmt.Errorf("history_id required")
+	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return 0, fmt.Errorf("not initialized")
+	}
+	var id, downloadID, savePath, wantedID, importPaths, status string
+	err := db.QueryRowContext(ctx, `
+		SELECT id, COALESCE(download_id, ''), COALESCE(save_path, ''), COALESCE(wanted_item_id, ''), COALESCE(import_paths, ''), status
+		FROM download_history WHERE id = ?
+	`, historyID).Scan(&id, &downloadID, &savePath, &wantedID, &importPaths, &status)
+	if err != nil {
+		return 0, fmt.Errorf("history not found: %w", err)
+	}
+	_ = downloadID
+	if status != "import_failed" && status != "stalled" && status != "sent" {
+		return 0, fmt.Errorf("history status %q is not retryable", status)
+	}
+	if err := m.ensureScanner(ctx); err != nil {
+		return 0, fmt.Errorf("scanner unavailable: %w", err)
+	}
+	client := m.getScannerClient()
+	if client == nil {
+		return 0, fmt.Errorf("scanner client unavailable")
+	}
+	paths := decodeImportPaths(importPaths)
+	if len(paths) == 0 {
+		paths = []string{savePath}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, raw := range paths {
+		path := resolveExistingImportPath(raw)
+		if path == "" {
+			continue
+		}
+		impCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+		cancel()
+		if err != nil {
+			return 1, fmt.Errorf("ImportPath: %w", err)
+		}
+		if resp.GetFilesImported() == 0 {
+			continue
+		}
+		if _, uerr := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
+			"completed", now, id,
+		); uerr != nil {
+			return 1, uerr
+		}
+		m.cleanupWantedPartials(wantedID, path)
+		return 1, nil
+	}
+	return 1, fmt.Errorf("retry found nothing to import for %s", historyID)
 }
 
 func (m *Module) keptSavePath(ctx context.Context, itemID string, id magnetIdentity) string {
@@ -450,6 +527,9 @@ func (m *Module) cleanupWantedPartials(wantedID, keepPath string) {
 		if p == "" || p == "." || isKeep(p) {
 			return
 		}
+		if strings.HasPrefix(p, "storage://") {
+			return
+		}
 		if !strings.Contains(filepath.ToSlash(p), "/partials/") {
 			return
 		}
@@ -488,6 +568,79 @@ func (m *Module) cleanupWantedPartials(wantedID, keepPath string) {
 		if err == nil && len(leftover) == 0 {
 			_ = os.Remove(itemDir)
 		}
+	}
+}
+
+// dropSiblingDownloads removes other in-flight torrents for the same wanted item
+// once one grab finishes (delete files / mesh objects). keepDownloadID is retained.
+func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloadID string) {
+	wantedID = strings.TrimSpace(wantedID)
+	if wantedID == "" {
+		return
+	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, COALESCE(download_id, ''), COALESCE(guid, ''), COALESCE(download_url, ''), COALESCE(attempt_loop, 1)
+		FROM download_history
+		WHERE wanted_item_id = ?
+		  AND status IN ('sent', 'stalled')
+		  AND (? = '' OR COALESCE(download_id, '') != ?)
+	`, wantedID, keepDownloadID, keepDownloadID)
+	if err != nil {
+		slog.Debug("query sibling downloads", "wanted", wantedID, "error", err)
+		return
+	}
+	defer rows.Close()
+	type sib struct {
+		id, downloadID, guid, url string
+		loop                      int
+	}
+	var list []sib
+	for rows.Next() {
+		var s sib
+		if err := rows.Scan(&s.id, &s.downloadID, &s.guid, &s.url, &s.loop); err != nil {
+			continue
+		}
+		list = append(list, s)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, s := range list {
+		if s.downloadID != "" {
+			m.removeInflightTorrentDelete(ctx, s.downloadID, true)
+		}
+		if _, err := db.ExecContext(ctx,
+			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ? AND status IN ('sent', 'stalled')`,
+			"superseded", now, s.id,
+		); err != nil {
+			slog.Warn("mark sibling superseded", "id", s.id, "error", err)
+			continue
+		}
+		m.blacklistRelease(ctx, wantedID, releaseAttemptKey(s.guid, s.url), s.loop, "superseded by completed grab")
+		slog.Info("dropped sibling download", "wanted", wantedID, "hist", s.id, "download_id", s.downloadID, "keep", keepDownloadID)
+	}
+}
+
+func (m *Module) removeInflightTorrentDelete(ctx context.Context, downloadID string, deleteFiles bool) {
+	if downloadID == "" {
+		return
+	}
+	client := m.downloaderClientLocked()
+	if client == nil {
+		_ = m.ensureDownloader(ctx)
+		client = m.downloaderClientLocked()
+	}
+	if client == nil {
+		return
+	}
+	rmCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := client.RemoveTorrent(rmCtx, &cdlv1.RemoveTorrentRequest{TorrentId: downloadID, DeleteFiles: deleteFiles}); err != nil {
+		slog.Debug("remove sibling torrent", "id", downloadID, "error", err)
 	}
 }
 

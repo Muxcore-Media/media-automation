@@ -7,8 +7,16 @@ service AutomationService {
   rpc Dispatch(DispatchRequest) returns (DispatchResponse);
   rpc AddToQueue(AddToQueueRequest) returns (AddToQueueResponse);
   rpc GetQueue(GetQueueRequest) returns (GetQueueResponse);
+  rpc RemoveFromQueue(RemoveFromQueueRequest) returns (RemoveFromQueueResponse);
   rpc GetHistory(GetHistoryRequest) returns (GetHistoryResponse);
   rpc SearchNow(SearchNowRequest) returns (SearchNowResponse);
+  rpc ListBlocklist(ListBlocklistRequest) returns (ListBlocklistResponse);
+  rpc ClearBlocklist(ClearBlocklistRequest) returns (ClearBlocklistResponse);
+  rpc BlocklistRelease(BlocklistReleaseRequest) returns (BlocklistReleaseResponse);
+  rpc RetryImport(RetryImportRequest) returns (RetryImportResponse);
+  rpc ListDelayProfiles(ListDelayProfilesRequest) returns (ListDelayProfilesResponse);
+  rpc UpsertDelayProfile(UpsertDelayProfileRequest) returns (UpsertDelayProfileResponse);
+  rpc ListCutoffUnmet(ListCutoffUnmetRequest) returns (ListCutoffUnmetResponse);
 }
 
 message SearchItemRequest {
@@ -143,4 +151,105 @@ message DownloadRecord {
   string completed_at = 12;
   string created_at = 13;
   string download_id = 14;
+}
+
+message RemoveFromQueueRequest {
+  string queue_id = 1;
+}
+
+message RemoveFromQueueResponse {}
+
+message ListBlocklistRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+  string wanted_item_id = 3;
+}
+
+message BlocklistEntry {
+  string wanted_item_id = 1;
+  string guid = 2;
+  int32 loop = 3;
+  string reason = 4;
+  string created_at = 5;
+  string title = 6;
+}
+
+message ListBlocklistResponse {
+  repeated BlocklistEntry entries = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message ClearBlocklistRequest {
+  string wanted_item_id = 1; // optional: clear one item's entries
+  string guid = 2;           // optional with wanted_item_id
+  bool clear_all = 3;
+}
+
+message ClearBlocklistResponse {
+  int32 removed = 1;
+}
+
+message ListDelayProfilesRequest {}
+
+message DelayProfile {
+  string protocol = 1;
+  int32 wait_minutes = 2;
+}
+
+message ListDelayProfilesResponse {
+  repeated DelayProfile profiles = 1;
+}
+
+message UpsertDelayProfileRequest {
+  string protocol = 1;
+  int32 wait_minutes = 2;
+}
+
+message UpsertDelayProfileResponse {
+  DelayProfile profile = 1;
+}
+
+message ListCutoffUnmetRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+message CutoffItem {
+  string queue_id = 1;
+  string item_type = 2;
+  string item_id = 3;
+  string title = 4;
+  int32 year = 5;
+  int32 current_score = 6;
+  int32 cutoff_score = 7;
+  string quality_profile_id = 8;
+}
+
+message ListCutoffUnmetResponse {
+  repeated CutoffItem items = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message BlocklistReleaseRequest {
+  string wanted_item_id = 1;
+  string guid = 2;
+  string reason = 3;
+  int32 loop = 4; // optional; defaults to 1
+}
+
+message BlocklistReleaseResponse {
+  bool success = 1;
+}
+
+message RetryImportRequest {
+  string history_id = 1; // optional; empty = retry all import_failed
+}
+
+message RetryImportResponse {
+  int32 attempted = 1;
+  string message = 2;
 }

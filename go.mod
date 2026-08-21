@@ -11,6 +11,7 @@ require (
 	github.com/Muxcore-Media/core/sdk/go/module v0.5.2
 	github.com/Muxcore-Media/media-custom-formats v0.1.1
 	github.com/Muxcore-Media/media-movies v0.1.0
+	github.com/Muxcore-Media/media-music v0.3.0
 	github.com/Muxcore-Media/media-scanner v0.1.1
 	github.com/Muxcore-Media/media-tvshows v0.1.1
 	google.golang.org/grpc v1.83.0
@@ -32,3 +33,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace github.com/Muxcore-Media/media-music => ../media-music
