@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
+	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	"github.com/Muxcore-Media/core/pkg/contracts"
 )
 
@@ -302,8 +303,8 @@ func (m *Module) stallWatchLoop() {
 }
 
 type inflightRow struct {
-	id, wantedID, guid, url, downloadID, sentAt, lastProgressAt string
-	loop, lastBytes                                             int
+	id, wantedID, guid, url, downloadID, sentAt, lastProgressAt, protocol string
+	loop, lastBytes                                                       int
 }
 
 func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
@@ -317,7 +318,7 @@ func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, wanted_item_id, guid, COALESCE(download_url, ''), COALESCE(download_id, ''),
 		       COALESCE(sent_at, created_at), COALESCE(attempt_loop, 1), COALESCE(last_bytes, 0),
-		       COALESCE(last_progress_at, '')
+		       COALESCE(last_progress_at, ''), COALESCE(download_protocol, '')
 		FROM download_history WHERE status = 'sent'
 	`)
 	if err != nil {
@@ -327,7 +328,7 @@ func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
 	var batch []inflightRow
 	for rows.Next() {
 		var r inflightRow
-		if err := rows.Scan(&r.id, &r.wantedID, &r.guid, &r.url, &r.downloadID, &r.sentAt, &r.loop, &r.lastBytes, &r.lastProgressAt); err != nil {
+		if err := rows.Scan(&r.id, &r.wantedID, &r.guid, &r.url, &r.downloadID, &r.sentAt, &r.loop, &r.lastBytes, &r.lastProgressAt, &r.protocol); err != nil {
 			slog.Warn("scan in-flight download", "error", err)
 			continue
 		}
@@ -341,6 +342,10 @@ func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
 }
 
 func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow, now time.Time) {
+	if isUsenetProtocol(r.protocol) {
+		m.evaluateInflightUsenet(ctx, db, r, now)
+		return
+	}
 	timeout := m.stallTimeoutForLoop(r.loop)
 	progressAt := parseFlexibleTime(r.lastProgressAt)
 	if progressAt.IsZero() {
@@ -352,14 +357,14 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 
 	snap, ok, missing := m.torrentSnapshot(ctx, r.downloadID)
 	if missing {
-		m.removeInflightTorrent(ctx, r.downloadID)
+		m.removeInflightDownload(ctx, r.protocol, r.downloadID)
 		m.finishInflight(ctx, db, r, "stalled", "downloader no longer has torrent")
 		return
 	}
 	if ok {
 		switch strings.ToLower(strings.TrimSpace(snap.status)) {
 		case "error", "failed":
-			m.removeInflightTorrent(ctx, r.downloadID)
+			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
 			m.finishInflight(ctx, db, r, "failed", "torrent reported "+snap.status)
 			return
 		case "completed", "seeding":
@@ -387,7 +392,7 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 		return
 	}
 	reason := "stalled: no progress for " + timeout.String()
-	m.removeInflightTorrent(ctx, r.downloadID)
+	m.removeInflightDownload(ctx, r.protocol, r.downloadID)
 	m.finishInflight(ctx, db, r, "stalled", reason)
 }
 
@@ -403,6 +408,30 @@ func (m *Module) finishInflight(ctx context.Context, db *sql.DB, r inflightRow, 
 	}
 	m.blacklistRelease(ctx, r.wantedID, releaseAttemptKey(r.guid, r.url), r.loop, reason)
 	slog.Info("gave up on torrent", "id", r.id, "status", status, "title_guid", r.guid, "reason", reason)
+}
+
+func (m *Module) removeInflightDownload(ctx context.Context, protocol, downloadID string) {
+	if downloadID == "" {
+		return
+	}
+	if isUsenetProtocol(protocol) {
+		client := m.usenetClientLocked()
+		if client == nil {
+			_ = m.ensureUsenetDownloader(ctx)
+			client = m.usenetClientLocked()
+		}
+		if client == nil {
+			return
+		}
+		rmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		deleteFiles := !m.keepStalledPartialsLocked()
+		if _, err := client.Delete(rmCtx, &usenetv1.DeleteRequest{Id: downloadID, DeleteFiles: deleteFiles}); err != nil {
+			slog.Debug("remove stalled usenet job", "id", downloadID, "error", err)
+		}
+		return
+	}
+	m.removeInflightTorrent(ctx, downloadID)
 }
 
 func (m *Module) removeInflightTorrent(ctx context.Context, downloadID string) {
@@ -438,10 +467,63 @@ type torrentSnap struct {
 	name       string
 }
 
-func (m *Module) downloaderClientLocked() cdlv1.DownloaderServiceClient {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.downloaderClient
+type usenetSnap struct {
+	progressPct float64
+	status      string
+	savePath    string
+	name        string
+}
+
+func (m *Module) evaluateInflightUsenet(ctx context.Context, db *sql.DB, r inflightRow, now time.Time) {
+	timeout := m.stallTimeoutForLoop(r.loop)
+	progressAt := parseFlexibleTime(r.lastProgressAt)
+	if progressAt.IsZero() {
+		progressAt = parseFlexibleTime(r.sentAt)
+	}
+	if progressAt.IsZero() {
+		progressAt = now
+	}
+
+	snap, ok, missing := m.usenetSnapshot(ctx, r.downloadID)
+	if missing {
+		m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+		m.finishInflight(ctx, db, r, "stalled", "downloader no longer has usenet job")
+		return
+	}
+	if ok {
+		st := strings.ToLower(strings.TrimSpace(snap.status))
+		switch {
+		case strings.Contains(st, "fail"):
+			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+			m.finishInflight(ctx, db, r, "failed", "usenet job failed")
+			return
+		case strings.Contains(st, "complete"):
+			if snap.savePath == "" {
+				return
+			}
+			m.handleDownloadLifecycleEvent(ctx, contracts.EventDownloadCompleted, contracts.DownloadEventPayload{
+				ID:       r.downloadID,
+				SavePath: snap.savePath,
+				Name:     snap.name,
+				Files:    []contracts.DownloadEventFile{{Path: snap.savePath}},
+			})
+			return
+		}
+		progressBytes := int64(snap.progressPct * 100)
+		if progressBytes > int64(r.lastBytes) {
+			_, _ = db.ExecContext(ctx,
+				`UPDATE download_history SET last_bytes = ?, last_progress_at = ? WHERE id = ?`,
+				progressBytes, now.Format(time.RFC3339), r.id,
+			)
+			return
+		}
+	}
+	if now.Sub(progressAt) < timeout {
+		return
+	}
+	reason := "stalled: no usenet progress for " + timeout.String()
+	m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+	m.finishInflight(ctx, db, r, "stalled", reason)
 }
 
 func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torrentSnap, bool, bool) {
@@ -472,6 +554,51 @@ func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torren
 		savePath:   t.GetSavePath(),
 		name:       t.GetName(),
 	}, true, false
+}
+
+func (m *Module) usenetSnapshot(ctx context.Context, jobID string) (usenetSnap, bool, bool) {
+	if jobID == "" {
+		return usenetSnap{}, false, true
+	}
+	client := m.usenetClientLocked()
+	if client == nil {
+		_ = m.ensureUsenetDownloader(ctx)
+		client = m.usenetClientLocked()
+	}
+	if client == nil {
+		return usenetSnap{}, false, false
+	}
+	snapCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if resp, err := client.ListQueue(snapCtx, &usenetv1.ListQueueRequest{}); err == nil {
+		for _, item := range resp.GetItems() {
+			if item.GetId() != jobID {
+				continue
+			}
+			return usenetSnap{
+				progressPct: item.GetProgress(),
+				status:      item.GetStatus(),
+				name:        item.GetName(),
+			}, true, false
+		}
+	}
+
+	hresp, err := client.GetHistory(snapCtx, &usenetv1.GetHistoryRequest{Limit: 50})
+	if err != nil {
+		return usenetSnap{}, false, false
+	}
+	for _, item := range hresp.GetItems() {
+		if item.GetId() != jobID {
+			continue
+		}
+		return usenetSnap{
+			status:   item.GetStatus(),
+			savePath: item.GetStorage(),
+			name:     item.GetName(),
+		}, true, false
+	}
+	return usenetSnap{}, false, true
 }
 
 func isTorrentMissingErr(err error) bool {

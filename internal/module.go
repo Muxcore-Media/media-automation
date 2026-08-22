@@ -25,6 +25,8 @@ import (
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
+	mediacontracts "github.com/Muxcore-Media/contracts-media/events"
+	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	formatsv1 "github.com/Muxcore-Media/media-custom-formats/proto/formatsv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
@@ -70,8 +72,11 @@ type Module struct {
 	// testIndexerClients, when set, skips discovery and is used for Search fan-out (tests).
 	testIndexerClients map[string]indexerv1.IndexerServiceClient
 
-	downloaderConn   *grpc.ClientConn
+	downloaderPool downloaderPool
+	// downloaderClient is kept for tests that inject a fake torrent client directly.
 	downloaderClient cdlv1.DownloaderServiceClient
+	testTorrentClient cdlv1.DownloaderServiceClient
+	testUsenetClient  usenetv1.UsenetDownloaderServiceClient
 	formatsConn      *grpc.ClientConn
 	formatsClient    formatsv1.FormatServiceClient
 	moviesConn       *grpc.ClientConn
@@ -331,9 +336,18 @@ func (m *Module) Stop(ctx context.Context) error {
 		delete(m.indexerClients, id)
 	}
 	m.mu.Unlock()
-	if m.downloaderConn != nil {
-		m.downloaderConn.Close()
+	m.downloaderPool.mu.Lock()
+	if m.downloaderPool.torrentConn != nil {
+		m.downloaderPool.torrentConn.Close()
+		m.downloaderPool.torrentConn = nil
+		m.downloaderPool.torrentClient = nil
 	}
+	if m.downloaderPool.usenetConn != nil {
+		m.downloaderPool.usenetConn.Close()
+		m.downloaderPool.usenetConn = nil
+		m.downloaderPool.usenetClient = nil
+	}
+	m.downloaderPool.mu.Unlock()
 	if m.formatsConn != nil {
 		m.formatsConn.Close()
 	}
@@ -502,29 +516,6 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 	return out, nil
 }
 
-func (m *Module) ensureDownloader(ctx context.Context) error {
-	m.mu.RLock()
-	if m.downloaderClient != nil {
-		m.mu.RUnlock()
-		return nil
-	}
-	m.mu.RUnlock()
-
-	addr, err := m.findModuleByCapability(ctx, "downloader")
-	if err != nil {
-		return err
-	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return fmt.Errorf("dial downloader: %w", err)
-	}
-	m.mu.Lock()
-	m.downloaderConn = conn
-	m.downloaderClient = cdlv1.NewDownloaderServiceClient(conn)
-	m.mu.Unlock()
-	return nil
-}
-
 func (m *Module) ensureFormats(ctx context.Context) error {
 	m.mu.RLock()
 	if m.formatsClient != nil {
@@ -651,6 +642,8 @@ func (m *Module) subscribeToMediaEvents() {
 		contracts.EventMovieFileAdded,
 		contracts.EventTVEpisodeFileAdded,
 		contracts.EventFileImported,
+		mediacontracts.EventMovieRequested,
+		mediacontracts.EventTVRequested,
 		contracts.EventDownloadStarted,
 		contracts.EventDownloadCompleted,
 		contracts.EventDownloadFailed,
@@ -708,6 +701,10 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 			if err := json.Unmarshal(evt.Payload, &payload); err == nil {
 				m.completeHistoryFromFileImported(context.Background(), payload)
 			}
+		case mediacontracts.EventMovieRequested:
+			m.handleMediaRequested(context.Background(), "movie", evt.Payload)
+		case mediacontracts.EventTVRequested:
+			m.handleMediaRequested(context.Background(), "tv", evt.Payload)
 		case contracts.EventDownloadStarted, contracts.EventDownloadCompleted, contracts.EventDownloadFailed:
 			var payload contracts.DownloadEventPayload
 			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
@@ -718,6 +715,42 @@ func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, 
 		}
 	}
 	cancel()
+}
+
+func (m *Module) handleMediaRequested(ctx context.Context, itemType string, raw json.RawMessage) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		slog.Warn("media request event unmarshal", "type", itemType, "error", err)
+		return
+	}
+	title, _ := payload["title"].(string)
+	var tmdbID int32
+	switch v := payload["tmdb_id"].(type) {
+	case float64:
+		tmdbID = int32(v)
+	case int:
+		tmdbID = int32(v)
+	case int32:
+		tmdbID = v
+	}
+	itemID, _ := payload["movie_id"].(string)
+	if itemID == "" {
+		itemID, _ = payload["series_id"].(string)
+	}
+	if itemID == "" && tmdbID > 0 {
+		itemID = fmt.Sprintf("tmdb_%d", tmdbID)
+	}
+	if itemID == "" {
+		slog.Debug("media request event missing item id", "type", itemType, "title", title)
+		return
+	}
+	m.upsertWanted(ctx, wantedEntry{
+		ItemType: itemType,
+		ItemID:   itemID,
+		TmdbID:   tmdbID,
+		Title:    title,
+	})
+	slog.Info("media request tracked in wanted", "type", itemType, "item_id", itemID, "title", title)
 }
 
 // handleDownloadLifecycleEvent correlates download.completed / download.failed with
@@ -1680,6 +1713,7 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 		results = filterTVReleaseGrain(results, itemType, title, year, season, episode, absolute, seriesType, cleanTitles)
 	}
 	results = m.filterOversizedReleases(results)
+	results = refineGrabRanking(results, missing)
 	if len(results) > 0 {
 		loop := m.attemptLoop(ctx, itemID)
 		best := m.pickNextRelease(ctx, itemID, loop, results)
@@ -1772,6 +1806,7 @@ type scoredRelease struct {
 	Category         string
 	SubCategory      string
 	Score            int
+	GrabRank         int
 }
 
 func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexerv1.SearchResult, title string, cleanTitles []string, profileID string, year int, itemType string) []scoredRelease {
@@ -2164,6 +2199,11 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	scored = filterTVReleaseGrain(scored, itemType, query, year, season, episode, absolute, seriesType, cleanTitles)
 	scored = m.filterOversizedReleases(scored)
 	scored = dedupeScoredReleases(scored)
+	for i := range scored {
+		if scored[i].GrabRank == 0 {
+			scored[i].GrabRank = scored[i].Score
+		}
+	}
 	if int(maxLimit) > 0 && len(scored) > int(maxLimit) {
 		scored = scored[:maxLimit]
 	}
@@ -2325,38 +2365,59 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		return nil, fmt.Errorf("release size exceeds max_release_gb")
 	}
 
-	if err := m.ensureDownloader(ctx); err != nil {
+	protocol := normalizeProtocol(req.GetDownloadProtocol())
+	if req.GetDownloadProtocol() == "" {
+		protocol = detectProtocolFromURL(req.GetDownloadUrl())
+	}
+
+	if err := m.ensureDownloaderForProtocol(ctx, protocol); err != nil {
 		return nil, fmt.Errorf("no downloader available: %w", err)
 	}
 
-	m.mu.RLock()
-	client := m.downloaderClient
-	db := m.db
-	m.mu.RUnlock()
-	if client == nil {
-		return nil, fmt.Errorf("no downloader available")
-	}
-
-	// Do not inherit the caller's deadline for AddTorrent: completion-side
-	// ImportPath can run for minutes and must not cancel magnet handoff.
 	addCtx, addCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer addCancel()
-	savePath := m.dispatchSavePath(context.Background(), req.GetItemId(), req.GetDownloadUrl(), req.GetGuid())
-	addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
-		TorrentUrl: req.GetDownloadUrl(),
-		SavePath:   savePath,
-		Category:   req.GetItemType(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("add torrent: %w", err)
+
+	var downloadID, savePath string
+	if isUsenetProtocol(protocol) {
+		client := m.usenetClientLocked()
+		if client == nil {
+			return nil, fmt.Errorf("no usenet downloader available")
+		}
+		addResp, err := client.AddNZB(addCtx, &usenetv1.AddNZBRequest{
+			NzbUrl:   req.GetDownloadUrl(),
+			Name:     req.GetTitle(),
+			Category: req.GetItemType(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("add nzb: %w", err)
+		}
+		downloadID = addResp.GetJobId()
+	} else {
+		client := m.torrentClientLocked()
+		if client == nil {
+			return nil, fmt.Errorf("no torrent downloader available")
+		}
+		savePath = m.dispatchSavePath(context.Background(), req.GetItemId(), req.GetDownloadUrl(), req.GetGuid())
+		addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
+			TorrentUrl: req.GetDownloadUrl(),
+			SavePath:   savePath,
+			Category:   req.GetItemType(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("add torrent: %w", err)
+		}
+		downloadID = addResp.GetTorrentId()
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	histID := fmt.Sprintf("dl_%s_%d", req.GetGuid(), time.Now().UnixNano())
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
 	if db != nil {
 		loop := m.attemptLoop(context.Background(), req.GetItemId())
 		if err := m.insertDownloadHistory(context.Background(), db, histID, req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
-			req.GetSize(), int64(req.GetScore()), req.GetDownloadUrl(), req.GetDownloadProtocol(), addResp.GetTorrentId(), savePath, loop, now); err != nil {
+			req.GetSize(), int64(req.GetScore()), req.GetDownloadUrl(), protocol, downloadID, savePath, loop, now); err != nil {
 			slog.Warn("insert download_history", "error", err)
 		}
 	}
@@ -2370,7 +2431,7 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 
 	payload, _ := json.Marshal(contracts.DownloadDispatchedPayload{
 		Title:            req.GetTitle(),
-		DownloadProtocol: req.GetDownloadProtocol(),
+		DownloadProtocol: protocol,
 		Score:            req.GetScore(),
 		ItemType:         req.GetItemType(),
 		ItemID:           req.GetItemId(),
@@ -2378,15 +2439,14 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		GUID:             req.GetGuid(),
 		Indexer:          req.GetIndexerName(),
 		Size:             req.GetSize(),
-		DownloadID:       addResp.GetTorrentId(),
+		DownloadID:       downloadID,
 		SeriesID:         seriesID,
 	})
-	// Publish async so a slow bus/policy path cannot block the Dispatch RPC.
 	go m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
 
-	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", req.GetDownloadProtocol(), "id", addResp.GetTorrentId())
+	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", protocol, "id", downloadID)
 	return &automationv1.DispatchResponse{
-		DownloadId: addResp.GetTorrentId(),
+		DownloadId: downloadID,
 		Status:     "sent",
 	}, nil
 }
