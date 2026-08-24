@@ -55,7 +55,7 @@ func (m *Module) syncWantedAudiobooks(ctx context.Context, seen map[string]struc
 			return totalUpserted, err
 		}
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return totalUpserted, err
 		}

@@ -26,11 +26,11 @@ import (
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
 	mediacontracts "github.com/Muxcore-Media/contracts-media/events"
+	scannerv1 "github.com/Muxcore-Media/contracts-scanner/muxcore/scanner/v1"
 	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	formatsv1 "github.com/Muxcore-Media/media-custom-formats/proto/formatsv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
 	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
-	scannerv1 "github.com/Muxcore-Media/contracts-scanner/muxcore/scanner/v1"
 	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
@@ -187,7 +187,7 @@ func (m *Module) Init(ctx context.Context) error {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("enable WAL: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -209,11 +209,11 @@ func (m *Module) Init(ctx context.Context) error {
 			UNIQUE(item_type, item_id)
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create wanted_items table: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE wanted_items ADD COLUMN quality_profile_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate wanted_items: %w", err)
 	}
 	for _, col := range []string{
@@ -225,7 +225,7 @@ func (m *Module) Init(ctx context.Context) error {
 		`ALTER TABLE wanted_items ADD COLUMN file_acquired_at TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			db.Close()
+			_ = db.Close()
 			return fmt.Errorf("migrate wanted_items: %w", err)
 		}
 	}
@@ -247,39 +247,39 @@ func (m *Module) Init(ctx context.Context) error {
 			download_id     TEXT DEFAULT ''
 		)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create download_history table: %w", err)
 	}
 	if err := m.migrateDelayTables(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate delay tables: %w", err)
 	}
 	if err := m.migrateSeriesOverrides(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate series overrides: %w", err)
 	}
 	if err := m.migrateStallTables(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate stall tables: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE download_history ADD COLUMN download_id TEXT DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate download_history: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_download_history_download_id ON download_history(download_id)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create download_history download_id index: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_wanted_type ON wanted_items(item_type, missing)
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("create wanted index: %w", err)
 	}
 	if err := m.migrateDelayTables(ctx, db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("migrate delay tables: %w", err)
 	}
 
@@ -291,7 +291,7 @@ func (m *Module) Init(ctx context.Context) error {
 
 	lis, err := net.Listen("tcp", m.grpcAddr)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("listen gRPC %s: %w", m.grpcAddr, err)
 	}
 	m.grpcLis = lis
@@ -327,45 +327,45 @@ func (m *Module) Stop(ctx context.Context) error {
 		m.grpcSrv.GracefulStop()
 	}
 	if m.mc != nil {
-		m.mc.Close()
+		_ = m.mc.Close()
 	}
 	m.mu.Lock()
 	for id, conn := range m.indexerConns {
-		conn.Close()
+		_ = conn.Close()
 		delete(m.indexerConns, id)
 		delete(m.indexerClients, id)
 	}
 	m.mu.Unlock()
 	m.downloaderPool.mu.Lock()
 	if m.downloaderPool.torrentConn != nil {
-		m.downloaderPool.torrentConn.Close()
+		_ = m.downloaderPool.torrentConn.Close()
 		m.downloaderPool.torrentConn = nil
 		m.downloaderPool.torrentClient = nil
 	}
 	if m.downloaderPool.usenetConn != nil {
-		m.downloaderPool.usenetConn.Close()
+		_ = m.downloaderPool.usenetConn.Close()
 		m.downloaderPool.usenetConn = nil
 		m.downloaderPool.usenetClient = nil
 	}
 	m.downloaderPool.mu.Unlock()
 	if m.formatsConn != nil {
-		m.formatsConn.Close()
+		_ = m.formatsConn.Close()
 	}
 	if m.moviesConn != nil {
-		m.moviesConn.Close()
+		_ = m.moviesConn.Close()
 	}
 	if m.tvConn != nil {
-		m.tvConn.Close()
+		_ = m.tvConn.Close()
 	}
 	if m.musicConn != nil {
-		m.musicConn.Close()
+		_ = m.musicConn.Close()
 	}
 	if m.scannerConn != nil {
-		m.scannerConn.Close()
+		_ = m.scannerConn.Close()
 	}
 	m.mu.Lock()
 	if m.db != nil {
-		m.db.Close()
+		_ = m.db.Close()
 		m.db = nil
 	}
 	m.mu.Unlock()
@@ -490,7 +490,7 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 
 	for id, conn := range m.indexerConns {
 		if _, ok := wanted[id]; !ok {
-			conn.Close()
+			_ = conn.Close()
 			delete(m.indexerConns, id)
 			delete(m.indexerClients, id)
 		}
@@ -898,16 +898,15 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	}(histID, payload.ID, now, wantedID, savePath, targets)
 }
 
-func (m *Module) importHintsForWanted(ctx context.Context, wantedItemID string) scannerv1.ImportPathRequest {
-	var out scannerv1.ImportPathRequest
+func (m *Module) importHintsForWanted(ctx context.Context, wantedItemID string) *scannerv1.ImportPathRequest {
 	if wantedItemID == "" {
-		return out
+		return nil
 	}
 	m.mu.RLock()
 	db := m.db
 	m.mu.RUnlock()
 	if db == nil {
-		return out
+		return nil
 	}
 	var tmdb, year, season, episode int64
 	var title string
@@ -917,19 +916,23 @@ func (m *Module) importHintsForWanted(ctx context.Context, wantedItemID string) 
 		FROM wanted_items WHERE item_id = ? LIMIT 1`, wantedItemID,
 	).Scan(&tmdb, &title, &year, &season, &episode)
 	if err != nil {
-		return out
+		return nil
 	}
-	out.TmdbId = int32(tmdb)
-	out.Title = strings.TrimSpace(title)
-	out.Year = int32(year)
-	out.SeasonNumber = int32(season)
-	out.EpisodeNumber = int32(episode)
-	return out
+	return &scannerv1.ImportPathRequest{
+		TmdbId:        int32(tmdb),
+		Title:         strings.TrimSpace(title),
+		Year:          int32(year),
+		SeasonNumber:  int32(season),
+		EpisodeNumber: int32(episode),
+	}
 }
 
 func (m *Module) importPathRequest(ctx context.Context, path, wantedItemID string) *scannerv1.ImportPathRequest {
 	req := &scannerv1.ImportPathRequest{Path: path}
 	hints := m.importHintsForWanted(ctx, wantedItemID)
+	if hints == nil {
+		return req
+	}
 	if hints.GetTmdbId() > 0 || hints.GetTitle() != "" || hints.GetYear() > 0 || hints.GetSeasonNumber() > 0 || hints.GetEpisodeNumber() > 0 {
 		req.TmdbId = hints.GetTmdbId()
 		req.Title = hints.GetTitle()
@@ -958,7 +961,7 @@ func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contract
 		slog.Debug("query history for file imported", "error", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type rec struct {
 		id, wantedID, savePath string
 		tmdb, season, episode  int
@@ -1340,7 +1343,7 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var toDelete [][2]string
 	for rows.Next() {
 		var itemType, itemID string
@@ -1375,7 +1378,7 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 		}
 	}
 	for _, d := range toDelete {
-		m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, d[0], d[1])
+		_, _ = m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, d[0], d[1])
 	}
 }
 
@@ -1484,7 +1487,7 @@ func (m *Module) removeWanted(ctx context.Context, itemType, itemID string) {
 	if m.db == nil || itemID == "" {
 		return
 	}
-	m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, itemID)
+	_, _ = m.db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, itemID)
 }
 
 func (m *Module) onFileAdded(ctx context.Context, itemType, itemID, filePath, quality string) {
@@ -1869,7 +1872,7 @@ func (m *Module) touchLastSearched(wantedID string) {
 	if m.db == nil {
 		return
 	}
-	m.db.Exec(`UPDATE wanted_items SET last_searched = datetime('now'), updated_at = datetime('now') WHERE id = ?`, wantedID)
+	_, _ = m.db.Exec(`UPDATE wanted_items SET last_searched = datetime('now'), updated_at = datetime('now') WHERE id = ?`, wantedID)
 }
 
 func (m *Module) hasInFlightDownload(ctx context.Context, itemID string) bool {
@@ -2648,7 +2651,7 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 	if err != nil {
 		return nil, fmt.Errorf("query queue: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var items []*automationv1.QueueItem
 	for rows.Next() {
@@ -2707,7 +2710,7 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 	if err != nil {
 		return nil, fmt.Errorf("query history: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var records []*automationv1.DownloadRecord
 	for rows.Next() {

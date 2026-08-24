@@ -6,23 +6,23 @@ import (
 	"testing"
 	"time"
 
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	"github.com/Muxcore-Media/core/pkg/contracts"
-	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	"google.golang.org/grpc"
 )
 
 // fakeDownloaderClient records AddTorrent and returns a fixed torrent id (offline).
 type fakeDownloaderClient struct {
 	cdlv1.DownloaderServiceClient
-	torrentID      string
-	calls          int
-	lastURL        string
-	lastSavePath   string
-	torrents       map[string]*cdlv1.TorrentInfo
-	removed        []string
-	deleteFiles    []bool
-	getErr         error
+	torrentID    string
+	calls        int
+	lastURL      string
+	lastSavePath string
+	torrents     map[string]*cdlv1.TorrentInfo
+	removed      []string
+	deleteFiles  []bool
+	getErr       error
 }
 
 func (f *fakeDownloaderClient) AddTorrent(ctx context.Context, in *cdlv1.AddTorrentRequest, opts ...grpc.CallOption) (*cdlv1.AddTorrentResponse, error) {

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	"github.com/Muxcore-Media/core/pkg/contracts"
-	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 func TestParseStallLoopMinutes(t *testing.T) {
