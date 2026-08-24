@@ -74,16 +74,6 @@ func (m *Module) syncWantedMusic(ctx context.Context, seen map[string]struct{}) 
 	return totalUpserted, nil
 }
 
-func (m *Module) closeMusicConn() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.musicConn != nil {
-		m.musicConn.Close()
-		m.musicConn = nil
-		m.musicClient = nil
-	}
-}
-
 func (m *Module) logMusicSync(n int, ok bool, err error) {
 	if err != nil {
 		slog.Debug("sync missing music albums", "error", err)

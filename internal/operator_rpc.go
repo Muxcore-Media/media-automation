@@ -67,7 +67,7 @@ func (m *Module) ListBlocklist(ctx context.Context, req *automationv1.ListBlockl
 	if err != nil {
 		return nil, fmt.Errorf("list blocklist: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var entries []*automationv1.BlocklistEntry
 	for rows.Next() {
@@ -78,11 +78,11 @@ func (m *Module) ListBlocklist(ctx context.Context, req *automationv1.ListBlockl
 		}
 		entries = append(entries, &automationv1.BlocklistEntry{
 			WantedItemId: wantedID,
-			Guid:          guid,
-			Loop:          int32(loop),
-			Reason:        reason,
-			CreatedAt:     createdAt,
-			Title:         title,
+			Guid:         guid,
+			Loop:         int32(loop),
+			Reason:       reason,
+			CreatedAt:    createdAt,
+			Title:        title,
 		})
 	}
 	return &automationv1.ListBlocklistResponse{
@@ -166,7 +166,7 @@ func (m *Module) ListDelayProfiles(ctx context.Context, req *automationv1.ListDe
 	if err != nil {
 		return nil, fmt.Errorf("list delay profiles: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var profiles []*automationv1.DelayProfile
 	for rows.Next() {
 		var protocol string
@@ -231,7 +231,7 @@ func (m *Module) ListCutoffUnmet(ctx context.Context, req *automationv1.ListCuto
 	if err != nil {
 		return nil, fmt.Errorf("list cutoff candidates: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var all []*automationv1.CutoffItem
 	for rows.Next() {

@@ -50,7 +50,7 @@ func TestGetHistoryPagination(t *testing.T) {
 func TestPaginationClampsAdminSafe(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
-	m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", Title: "A"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", Title: "A"})
 	insertHistoryWithDownloadID(t, m, "h1", "d1")
 
 	q, err := m.GetQueue(ctx, &autov1.GetQueueRequest{Page: 0, PageSize: 0})

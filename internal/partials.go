@@ -312,7 +312,7 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 		}
 		recs = append(recs, r)
 	}
-	rows.Close()
+	_ = rows.Close()
 	if len(recs) == 0 {
 		return
 	}
@@ -506,7 +506,7 @@ func (m *Module) cleanupWantedPartials(wantedID, keepPath string) {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	keepCands := m.existingPartialCandidates(keepPath)
 	keepPath = filepath.Clean(strings.TrimSpace(keepPath))
 	if keepPath != "" && keepPath != "." && filepath.IsAbs(keepPath) {
@@ -598,7 +598,7 @@ func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloa
 		slog.Debug("query sibling downloads", "wanted", wantedID, "error", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type sib struct {
 		id, downloadID, guid, url string
 		loop                      int

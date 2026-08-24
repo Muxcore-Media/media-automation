@@ -132,7 +132,7 @@ func (m *Module) activeSeasonPacks(ctx context.Context) map[string][]packSpan {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var seriesID, title string
 		if err := rows.Scan(&seriesID, &title); err != nil {
@@ -178,7 +178,7 @@ func (m *Module) seriesWithGrabs(ctx context.Context) map[string]struct{} {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var seriesID string
 		if err := rows.Scan(&seriesID); err != nil {
