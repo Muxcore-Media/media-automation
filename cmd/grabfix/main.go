@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
+	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -20,11 +20,11 @@ type actionsFile struct {
 }
 
 type removeAction struct {
-	DownloadID string `json:"download_id"`
-	DeleteFiles bool  `json:"delete_files"`
-	Want       string `json:"want"`
-	Release    string `json:"release"`
-	Status     string `json:"status"`
+	DownloadID  string `json:"download_id"`
+	DeleteFiles bool   `json:"delete_files"`
+	Want        string `json:"want"`
+	Release     string `json:"release"`
+	Status      string `json:"status"`
 }
 
 type researchJob struct {
@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		fatalf("dial downloader: %v", err)
 	}
-	defer dlConn.Close()
+	defer func() { _ = dlConn.Close() }()
 	dl := cdlv1.NewDownloaderServiceClient(dlConn)
 
 	list, err := dl.ListTorrents(ctx, &cdlv1.ListTorrentsRequest{})
@@ -110,7 +110,7 @@ func main() {
 	if err != nil {
 		fatalf("dial automation: %v", err)
 	}
-	defer autoConn.Close()
+	defer func() { _ = autoConn.Close() }()
 	auto := automationv1.NewAutomationServiceClient(autoConn)
 
 	for _, j := range actions.Research {

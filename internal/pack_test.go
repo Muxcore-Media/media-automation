@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
 	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
+	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
 	"google.golang.org/grpc"
 )
 
@@ -268,7 +268,7 @@ func TestSearchAndStoreSkipsWrongYearEpisodeForPack(t *testing.T) {
 	m.upsertWanted(ctx, wantedEntry{
 		ItemType: "tv", ItemID: "tv_franklin_s5", TmdbID: 908, Title: "Franklin", Year: 1997,
 		SeasonNumber: 5, EpisodeNumber: 0, SeriesID: "tv_franklin",
-		CleanTitles:  []string{cleanMatchTitle("Franklin")},
+		CleanTitles: []string{cleanMatchTitle("Franklin")},
 	})
 	var wantedID string
 	m.mu.RLock()

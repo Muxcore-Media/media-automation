@@ -74,7 +74,7 @@ func (m *Module) ensureTorrentDownloader(ctx context.Context) error {
 	m.downloaderPool.mu.Lock()
 	defer m.downloaderPool.mu.Unlock()
 	if m.downloaderPool.torrentClient != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil
 	}
 	m.downloaderPool.torrentConn = conn
@@ -107,7 +107,7 @@ func (m *Module) ensureUsenetDownloader(ctx context.Context) error {
 	m.downloaderPool.mu.Lock()
 	defer m.downloaderPool.mu.Unlock()
 	if m.downloaderPool.usenetClient != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil
 	}
 	m.downloaderPool.usenetConn = conn
