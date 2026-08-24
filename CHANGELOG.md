@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.43] — 2026-08-22
+
+### Added (cycle 133–134 hardening)
+- `status_detail` column on `download_history`; `GetHistory` returns `status_detail` and derived `status_label` on each `DownloadRecord` (proto fields 15–16) for admin-ui / request-media status UX.
+- `HistoryStatusLabel()` and `classifyImportError()` map machine status + scanner errors to short operator-facing reasons (watch dir, timeout, missing path, no importable files).
+- 8s default peer-discovery timeout (`withPeerTimeout`) on indexer, downloader, and library module discovery when callers omit a deadline.
+- Wanted sync for **books**, **comics**, and **audiobooks** via companion HTTP APIs (library gRPC port + 1); prune respects per-library sync success.
+
+### Changed
+- Central `finishHistoryStatus()` / `noteImportFailedDetail()` persist detail on download lifecycle, import retries, stall reap, and sibling supersede.
+
+## [0.1.42] — 2026-08-21
+
+### Fixed
+- `retryImportFailed` uses a 2h `ImportPath` timeout (was 5m) and logs at Info/Warn when retries find nothing or import zero files — large mesh-assembled season packs can complete import after assemble.
+
+## [0.1.41] — 2026-08-21
+
+### Fixed
+- `download.completed` no longer marks history `completed` when `ImportPath` imported zero files; stays `import_failed` so RSS retry can run after assemble fixes.
+
+## [0.1.40] — 2026-08-21
+
+### Fixed
+- Mesh import paths map `storage://torrent/pending` (and `pending_*` partial dirs) to `storage://torrent/{infohash}` / `btih_{infohash}` once metadata is known, matching downloader-native-torrent save-path renames.
+
 ## [0.1.39] — 2026-08-20
 
 ### Added

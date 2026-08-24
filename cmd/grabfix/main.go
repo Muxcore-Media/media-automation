@@ -9,7 +9,7 @@ import (
 	"time"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
-	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

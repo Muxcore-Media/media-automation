@@ -10,8 +10,8 @@ import (
 	"time"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
-	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	"github.com/Muxcore-Media/core/pkg/contracts"
+	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 )
 
 const (
@@ -66,6 +66,7 @@ func (m *Module) migrateStallTables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE download_history ADD COLUMN save_path TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN files_fingerprint TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN import_paths TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN status_detail TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate stall columns: %w", err)
@@ -398,11 +399,7 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 
 // finishInflight marks history and blacklists the GUID so the next search tries another release.
 func (m *Module) finishInflight(ctx context.Context, db *sql.DB, r inflightRow, status, reason string) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.ExecContext(ctx,
-		`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ? AND status = 'sent'`,
-		status, now, r.id,
-	); err != nil {
+	if err := finishHistoryStatusWhere(ctx, db, r.id, status, reason, ` AND status = 'sent'`); err != nil {
 		slog.Warn("mark inflight "+status, "id", r.id, "error", err)
 		return
 	}

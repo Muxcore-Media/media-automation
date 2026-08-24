@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	autov1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 func TestRemoveFromQueueAndBlocklist(t *testing.T) {

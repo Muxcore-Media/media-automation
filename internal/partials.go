@@ -11,7 +11,6 @@ import (
 	"time"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
-	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
 )
 
 func (m *Module) maybeMergeMagnet(ctx context.Context, itemID string, loop int, results []scoredRelease, best *scoredRelease) string {
@@ -325,7 +324,6 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 	if client == nil {
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
 	for _, rec := range recs {
 		paths := decodeImportPaths(rec.importPaths)
 		if len(paths) == 0 {
@@ -333,23 +331,29 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 		}
 		var imported bool
 		var used string
+		var lastDetail string
 		for _, raw := range paths {
 			path := resolveExistingImportPath(raw)
 			if path == "" {
+				lastDetail = "download path missing on disk"
 				continue
 			}
+			req := m.importPathRequest(context.Background(), path, rec.wantedID)
 			impCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-			resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+			resp, err := client.ImportPath(impCtx, req)
 			cancel()
 			if err != nil {
+				lastDetail = classifyImportError(err.Error())
 				slog.Warn("retry ImportPath failed", "id", rec.id, "path", path, "error", err)
 				continue
 			}
 			if resp.GetFilesImported() == 0 && resp.GetFilesFound() == 0 {
+				lastDetail = "no importable files found"
 				slog.Info("retry ImportPath found nothing", "id", rec.id, "path", path)
 				continue
 			}
 			if resp.GetFilesImported() == 0 {
+				lastDetail = "no importable files found"
 				slog.Warn("retry ImportPath imported nothing", "id", rec.id, "path", path, "found", resp.GetFilesFound(), "skipped", resp.GetFilesSkipped())
 				continue
 			}
@@ -358,13 +362,13 @@ func (m *Module) retryImportFailed(ctx context.Context) {
 			break
 		}
 		if !imported {
+			if lastDetail != "" {
+				noteImportFailedDetail(ctx, db, rec.id, lastDetail)
+			}
 			continue
 		}
-		if _, uerr := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"completed", now, rec.id,
-		); uerr != nil {
-			slog.Warn("mark retried import completed", "id", rec.id, "error", uerr)
+		if err := finishHistoryStatus(ctx, db, rec.id, "completed", ""); err != nil {
+			slog.Warn("mark retried import completed", "id", rec.id, "error", err)
 			continue
 		}
 		m.cleanupWantedPartials(rec.wantedID, used)
@@ -407,30 +411,29 @@ func (m *Module) retryImportHistoryID(ctx context.Context, historyID string) (in
 	if len(paths) == 0 {
 		paths = []string{savePath}
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
 	for _, raw := range paths {
 		path := resolveExistingImportPath(raw)
 		if path == "" {
 			continue
 		}
 		impCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+		resp, err := client.ImportPath(impCtx, m.importPathRequest(ctx, path, wantedID))
 		cancel()
 		if err != nil {
+			detail := classifyImportError(err.Error())
+			noteImportFailedDetail(ctx, db, id, detail)
 			return 1, fmt.Errorf("ImportPath: %w", err)
 		}
 		if resp.GetFilesImported() == 0 {
 			continue
 		}
-		if _, uerr := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"completed", now, id,
-		); uerr != nil {
-			return 1, uerr
+		if err := finishHistoryStatus(ctx, db, id, "completed", ""); err != nil {
+			return 1, err
 		}
 		m.cleanupWantedPartials(wantedID, path)
 		return 1, nil
 	}
+	noteImportFailedDetail(ctx, db, id, "no importable files found")
 	return 1, fmt.Errorf("retry found nothing to import for %s", historyID)
 }
 
@@ -608,15 +611,11 @@ func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloa
 		}
 		list = append(list, s)
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
 	for _, s := range list {
 		if s.downloadID != "" {
 			m.removeInflightTorrentDelete(ctx, s.downloadID, true)
 		}
-		if _, err := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ? AND status IN ('sent', 'stalled')`,
-			"superseded", now, s.id,
-		); err != nil {
+		if err := finishHistoryStatusWhere(ctx, db, s.id, "superseded", "superseded by completed grab", ` AND status IN ('sent', 'stalled')`); err != nil {
 			slog.Warn("mark sibling superseded", "id", s.id, "error", err)
 			continue
 		}
