@@ -20,7 +20,7 @@ func newTestModule(t *testing.T) *Module {
 	if err := m.Init(ctx); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	t.Cleanup(func() { m.Stop(ctx) })
+	t.Cleanup(func() { _ = m.Stop(ctx) })
 	return m
 }
 
@@ -123,8 +123,8 @@ func TestAddDuplicateToQueue(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
 
-	m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "Test"})
-	m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "Test"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "Test"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "Test"})
 
 	queue, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestGetQueuePagination(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{
 			ItemType: "movie",
 			ItemId:   fmt.Sprintf("m%d", i+1),
 			TmdbId:   int32(100 + i),
@@ -173,8 +173,8 @@ func TestGetQueueFilter(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()
 
-	m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "A Movie"})
-	m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "tv", ItemId: "t1", TmdbId: 2, Title: "A Show"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m1", TmdbId: 1, Title: "A Movie"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "tv", ItemId: "t1", TmdbId: 2, Title: "A Show"})
 
 	movies, err := m.GetQueue(ctx, &autov1.GetQueueRequest{Filter: "movie"})
 	if err != nil {
@@ -376,7 +376,7 @@ func TestUpsertWantedPreservesLastSearched(t *testing.T) {
 		ItemType: "movie", ItemID: "mv1", TmdbID: 1, Title: "A", Year: 2000, QualityProfileID: "qp1",
 	})
 	m.mu.Lock()
-	m.db.Exec(`UPDATE wanted_items SET last_searched = '2020-01-01T00:00:00Z' WHERE item_id = 'mv1'`)
+	_, _ = m.db.Exec(`UPDATE wanted_items SET last_searched = '2020-01-01T00:00:00Z' WHERE item_id = 'mv1'`)
 	m.mu.Unlock()
 
 	m.upsertWanted(ctx, wantedEntry{
@@ -496,7 +496,7 @@ func TestSearchAndStoreDoesNotClearMissing(t *testing.T) {
 	m.upsertWanted(ctx, wantedEntry{ItemType: "movie", ItemID: "mv1", TmdbID: 1, Title: "A"})
 	var id string
 	m.mu.RLock()
-	m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'mv1'`).Scan(&id)
+	_ = m.db.QueryRow(`SELECT id FROM wanted_items WHERE item_id = 'mv1'`).Scan(&id)
 	m.mu.RUnlock()
 
 	m.searchAndStore(ctx, id, "movie", "mv1", "A", 1, 2000, 0, 0, 0, "", "", "", []string{cleanMatchTitle("A")}, true, 0, "")
@@ -558,14 +558,14 @@ func TestAddToQueueCoercesSeasonZeroDummy(t *testing.T) {
 	ctx := context.Background()
 
 	add, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
-		ItemType:     "tv",
-		ItemId:       "ep_tos_0_12",
-		TmdbId:       253,
-		Title:        "Star Trek",
-		Year:         1966,
-		SeasonNumber: 0,
+		ItemType:      "tv",
+		ItemId:        "ep_tos_0_12",
+		TmdbId:        253,
+		Title:         "Star Trek",
+		Year:          1966,
+		SeasonNumber:  0,
 		EpisodeNumber: 12,
-		SeriesId:     "tv_tos",
+		SeriesId:      "tv_tos",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +721,7 @@ func TestOnFileAddedKeepsUpgradeCandidate(t *testing.T) {
 		QualityProfileID: "",
 	})
 	m.mu.Lock()
-	m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
+	_, _ = m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id)
 		VALUES ('dl1', 'mv_up', 'g1', 'Upgradable.1080p', '', 0, 100, '', '', 'completed', datetime('now'), datetime('now'), 'd1')`)
 	m.mu.Unlock()
 
@@ -754,7 +754,7 @@ func TestHasInFlightDownload(t *testing.T) {
 		t.Fatal("expected no in-flight")
 	}
 	m.mu.Lock()
-	m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, score, status, created_at)
+	_, _ = m.db.Exec(`INSERT INTO download_history (id, wanted_item_id, guid, title, score, status, created_at)
 		VALUES ('dl3', 'mv_fly', 'g3', 'x', 10, 'sent', datetime('now'))`)
 	m.mu.Unlock()
 	if !m.hasInFlightDownload(ctx, "mv_fly") {

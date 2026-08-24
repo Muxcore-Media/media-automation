@@ -48,7 +48,7 @@ func (m *Module) replaceSeriesOverridesJSON(ctx context.Context, db *sql.DB, raw
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM series_overrides`); err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (m *Module) listSeriesOverridesJSON(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var list []seriesOverride
 	for rows.Next() {
 		var id, pref, ign string
