@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 func (m *Module) RemoveFromQueue(ctx context.Context, req *automationv1.RemoveFromQueueRequest) (*automationv1.RemoveFromQueueResponse, error) {

@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	automationv1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	indexerv1 "github.com/Muxcore-Media/contracts-indexer/muxcore/indexer/v1"
@@ -29,9 +29,9 @@ import (
 	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	formatsv1 "github.com/Muxcore-Media/media-custom-formats/proto/formatsv1"
 	mgmntv1 "github.com/Muxcore-Media/media-movies/proto/mgmntv1"
-	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
-	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
+	scannerv1 "github.com/Muxcore-Media/contracts-scanner/muxcore/scanner/v1"
+	tvmgmtv1 "github.com/Muxcore-Media/media-tvshows/proto/tvmgmtv1"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
 	eventsv1 "github.com/Muxcore-Media/core/proto/gen/muxcore/events/v1"
@@ -74,19 +74,19 @@ type Module struct {
 
 	downloaderPool downloaderPool
 	// downloaderClient is kept for tests that inject a fake torrent client directly.
-	downloaderClient cdlv1.DownloaderServiceClient
+	downloaderClient  cdlv1.DownloaderServiceClient
 	testTorrentClient cdlv1.DownloaderServiceClient
 	testUsenetClient  usenetv1.UsenetDownloaderServiceClient
-	formatsConn      *grpc.ClientConn
-	formatsClient    formatsv1.FormatServiceClient
-	moviesConn       *grpc.ClientConn
-	moviesClient     mgmntv1.MovieManagementServiceClient
-	tvConn           *grpc.ClientConn
-	tvClient         tvmgmtv1.TvManagementServiceClient
-	musicConn        *grpc.ClientConn
-	musicClient      musicv1.MusicManagementServiceClient
-	scannerConn      *grpc.ClientConn
-	scannerClient    scannerv1.ScannerServiceClient
+	formatsConn       *grpc.ClientConn
+	formatsClient     formatsv1.FormatServiceClient
+	moviesConn        *grpc.ClientConn
+	moviesClient      mgmntv1.MovieManagementServiceClient
+	tvConn            *grpc.ClientConn
+	tvClient          tvmgmtv1.TvManagementServiceClient
+	musicConn         *grpc.ClientConn
+	musicClient       musicv1.MusicManagementServiceClient
+	scannerConn       *grpc.ClientConn
+	scannerClient     scannerv1.ScannerServiceClient
 	// testScannerClient, when set, skips discovery and is used for ImportPath (tests).
 	testScannerClient scannerv1.ScannerServiceClient
 }
@@ -164,7 +164,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.42",
+		Version:        "0.1.43",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -410,6 +410,8 @@ func (m *Module) findModuleByCapability(ctx context.Context, cap string) (string
 	if m.mc == nil {
 		return "", fmt.Errorf("not connected to core")
 	}
+	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
+	defer cancel()
 	modules, err := m.mc.Discovery.FindByCapability(ctx, cap)
 	if err != nil {
 		return "", fmt.Errorf("discover %s: %w", cap, err)
@@ -458,6 +460,8 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 	if m.mc == nil {
 		return nil, fmt.Errorf("not connected to core")
 	}
+	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
+	defer cancel()
 	modules, err := m.mc.Discovery.FindByCapability(ctx, "indexer")
 	if err != nil {
 		return nil, fmt.Errorf("discover indexer: %w", err)
@@ -620,7 +624,16 @@ func (m *Module) getScannerClient() scannerv1.ScannerServiceClient {
 // ── Event Subscriptions ─────────────────────────────────────────
 
 func (m *Module) subscribeToMediaEvents() {
-	delay := 15 * time.Second
+	deadline := time.Now().Add(30 * time.Second)
+	for m.mc == nil && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if m.mc == nil {
+		slog.Warn("media-automation: not connected to core, skipping event subscriptions")
+		return
+	}
+
+	delay := time.Duration(0)
 	if v := os.Getenv("AUTOMATION_EVENT_SUBSCRIBE_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			delay = d
@@ -628,10 +641,6 @@ func (m *Module) subscribeToMediaEvents() {
 	}
 	if delay > 0 {
 		time.Sleep(delay)
-	}
-	if m.mc == nil {
-		slog.Warn("media-automation: not connected to core, skipping event subscriptions")
-		return
 	}
 
 	eventTypes := []string{
@@ -658,6 +667,20 @@ func (m *Module) subscribeToMediaEvents() {
 		go m.handleEventStream(et, ch, cancel)
 		slog.Info("subscribed to events", "type", et)
 	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		m.reconcileBootState(ctx)
+	}()
+}
+
+func (m *Module) reconcileBootState(ctx context.Context) {
+	slog.Info("media-automation: boot reconciliation starting")
+	m.retryImportFailed(ctx)
+	m.reapStalledDownloads(ctx, time.Now().UTC())
+	go m.syncWantedFromLibrariesBackground()
+	slog.Info("media-automation: boot reconciliation finished")
 }
 
 func (m *Module) handleEventStream(eventType string, ch <-chan *eventsv1.Event, cancel context.CancelFunc) {
@@ -746,7 +769,7 @@ func (m *Module) handleMediaRequested(ctx context.Context, itemType string, raw 
 	}
 	m.upsertWanted(ctx, wantedEntry{
 		ItemType: itemType,
-		ItemID:   itemID,
+		ItemID:   m.reconcileWantedItemID(ctx, itemID, tmdbID, itemType),
 		TmdbID:   tmdbID,
 		Title:    title,
 	})
@@ -796,15 +819,12 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		if histStatus != "sent" && histStatus != "stalled" {
 			return
 		}
-		if _, err := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"failed", now, histID,
-		); err != nil {
-			slog.Warn("mark download failed", "id", histID, "error", err)
-		}
 		reason := payload.Error
 		if reason == "" {
 			reason = "download failed"
+		}
+		if err := finishHistoryStatus(ctx, db, histID, "failed", reason); err != nil {
+			slog.Warn("mark download failed", "id", histID, "error", err)
 		}
 		m.blacklistRelease(ctx, wantedID, releaseAttemptKey(guid, downloadURL), loop, reason)
 		return
@@ -816,26 +836,22 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	}
 	if err := m.ensureScanner(ctx); err != nil {
 		slog.Warn("ensure scanner for import", "download_id", payload.ID, "error", err)
-		if _, uerr := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"import_failed", now, histID,
-		); uerr != nil {
+		detail := classifyImportError(err.Error())
+		if uerr := finishHistoryStatus(ctx, db, histID, "import_failed", detail); uerr != nil {
 			slog.Warn("mark import_failed", "id", histID, "error", uerr)
 		}
-		m.publishImportFailed(payload.ID, payload.SavePath, err.Error())
+		m.publishImportFailed(payload.ID, payload.SavePath, detail)
 		return
 	}
 
 	client := m.getScannerClient()
 	if client == nil {
 		slog.Warn("scanner client unavailable", "download_id", payload.ID)
-		if _, uerr := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"import_failed", now, histID,
-		); uerr != nil {
+		detail := classifyImportError("scanner client unavailable")
+		if uerr := finishHistoryStatus(ctx, db, histID, "import_failed", detail); uerr != nil {
 			slog.Warn("mark import_failed", "id", histID, "error", uerr)
 		}
-		m.publishImportFailed(payload.ID, payload.SavePath, "scanner client unavailable")
+		m.publishImportFailed(payload.ID, payload.SavePath, detail)
 		return
 	}
 
@@ -851,16 +867,14 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		var imported int32
 		for _, path := range targets {
 			path = normalizeStorageURI(path)
-			resp, err := client.ImportPath(impCtx, &scannerv1.ImportPathRequest{Path: path})
+			resp, err := client.ImportPath(impCtx, m.importPathRequest(impCtx, path, wantedID))
 			if err != nil {
 				slog.Warn("ImportPath failed", "download_id", downloadID, "path", path, "error", err)
-				if _, uerr := db.ExecContext(context.Background(),
-					`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-					"import_failed", now, histID,
-				); uerr != nil {
+				detail := classifyImportError(err.Error())
+				if uerr := finishHistoryStatus(context.Background(), db, histID, "import_failed", detail); uerr != nil {
 					slog.Warn("mark import_failed", "id", histID, "error", uerr)
 				}
-				m.publishImportFailed(downloadID, path, err.Error())
+				m.publishImportFailed(downloadID, path, detail)
 				return
 			}
 			if resp != nil {
@@ -869,24 +883,61 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 		}
 		if imported == 0 {
 			slog.Warn("ImportPath imported nothing", "download_id", downloadID, "targets", len(targets))
-			if _, uerr := db.ExecContext(context.Background(),
-				`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-				"import_failed", now, histID,
-			); uerr != nil {
+			detail := classifyImportError("imported 0 files")
+			if uerr := finishHistoryStatus(context.Background(), db, histID, "import_failed", detail); uerr != nil {
 				slog.Warn("mark import_failed", "id", histID, "error", uerr)
 			}
-			m.publishImportFailed(downloadID, savePath, "imported 0 files")
+			m.publishImportFailed(downloadID, savePath, detail)
 			return
 		}
-		if _, err := db.ExecContext(context.Background(),
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ?`,
-			"completed", now, histID,
-		); err != nil {
+		if err := finishHistoryStatus(context.Background(), db, histID, "completed", ""); err != nil {
 			slog.Warn("mark download completed", "id", histID, "error", err)
 		}
 		m.dropSiblingDownloads(context.Background(), wantedID, downloadID)
 		m.cleanupWantedPartials(wantedID, savePath)
 	}(histID, payload.ID, now, wantedID, savePath, targets)
+}
+
+func (m *Module) importHintsForWanted(ctx context.Context, wantedItemID string) scannerv1.ImportPathRequest {
+	var out scannerv1.ImportPathRequest
+	if wantedItemID == "" {
+		return out
+	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return out
+	}
+	var tmdb, year, season, episode int64
+	var title string
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(tmdb_id, 0), COALESCE(title, ''), COALESCE(year, 0),
+		       COALESCE(season_number, 0), COALESCE(episode_number, 0)
+		FROM wanted_items WHERE item_id = ? LIMIT 1`, wantedItemID,
+	).Scan(&tmdb, &title, &year, &season, &episode)
+	if err != nil {
+		return out
+	}
+	out.TmdbId = int32(tmdb)
+	out.Title = strings.TrimSpace(title)
+	out.Year = int32(year)
+	out.SeasonNumber = int32(season)
+	out.EpisodeNumber = int32(episode)
+	return out
+}
+
+func (m *Module) importPathRequest(ctx context.Context, path, wantedItemID string) *scannerv1.ImportPathRequest {
+	req := &scannerv1.ImportPathRequest{Path: path}
+	hints := m.importHintsForWanted(ctx, wantedItemID)
+	if hints.GetTmdbId() > 0 || hints.GetTitle() != "" || hints.GetYear() > 0 || hints.GetSeasonNumber() > 0 || hints.GetEpisodeNumber() > 0 {
+		req.TmdbId = hints.GetTmdbId()
+		req.Title = hints.GetTitle()
+		req.Year = hints.GetYear()
+		req.SeasonNumber = hints.GetSeasonNumber()
+		req.EpisodeNumber = hints.GetEpisodeNumber()
+	}
+	return req
 }
 
 func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contracts.FileImportedPayload) {
@@ -925,12 +976,8 @@ func (m *Module) completeHistoryFromFileImported(ctx context.Context, p contract
 	if len(hits) == 0 {
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
 	for _, r := range hits {
-		if _, err := db.ExecContext(ctx,
-			`UPDATE download_history SET status = ?, completed_at = ? WHERE id = ? AND status IN ('import_failed', 'sent')`,
-			"completed", now, r.id,
-		); err != nil {
+		if err := finishHistoryStatusWhere(ctx, db, r.id, "completed", "", ` AND status IN ('import_failed', 'sent')`); err != nil {
 			slog.Warn("mark history completed from file import", "id", r.id, "error", err)
 			continue
 		}
@@ -1113,8 +1160,8 @@ type wantedEntry struct {
 
 func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 	seen := make(map[string]struct{})
-	moviesOK, tvOK, musicOK := false, false, false
-	moviesN, tvN, musicN := 0, 0, 0
+	moviesOK, tvOK, musicOK, booksOK, comicsOK, audiobooksOK := false, false, false, false, false, false
+	moviesN, tvN, musicN, booksN, comicsN, audiobooksN := 0, 0, 0, 0, 0, 0
 	var err error
 	if moviesN, err = m.syncWantedMovies(ctx, seen); err != nil {
 		slog.Debug("sync missing movies", "error", err)
@@ -1131,9 +1178,27 @@ func (m *Module) syncWantedFromLibraries(ctx context.Context) {
 	} else {
 		musicOK = true
 	}
-	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK, musicOK)
+	if booksN, err = m.syncWantedBooks(ctx, seen); err != nil {
+		m.logBooksSync(0, false, err)
+	} else {
+		booksOK = true
+	}
+	if comicsN, err = m.syncWantedComics(ctx, seen); err != nil {
+		m.logComicsSync(0, false, err)
+	} else {
+		comicsOK = true
+	}
+	if audiobooksN, err = m.syncWantedAudiobooks(ctx, seen); err != nil {
+		m.logAudiobooksSync(0, false, err)
+	} else {
+		audiobooksOK = true
+	}
+	m.pruneWantedNotInLibraries(ctx, seen, moviesOK, tvOK, musicOK, booksOK, comicsOK, audiobooksOK)
 	m.pruneSeasonZeroEpisodeDummies(ctx)
-	slog.Info("wanted library sync upserted", "movies", moviesN, "tv", tvN, "music", musicN, "movies_ok", moviesOK, "tv_ok", tvOK, "music_ok", musicOK)
+	slog.Info("wanted library sync upserted",
+		"movies", moviesN, "tv", tvN, "music", musicN, "books", booksN, "comics", comicsN, "audiobooks", audiobooksN,
+		"movies_ok", moviesOK, "tv_ok", tvOK, "music_ok", musicOK, "books_ok", booksOK,
+		"comics_ok", comicsOK, "audiobooks_ok", audiobooksOK)
 }
 
 func (m *Module) syncWantedMovies(ctx context.Context, seen map[string]struct{}) (int, error) {
@@ -1262,8 +1327,8 @@ func preferSeasonPack(missingCount int, seriesType string) bool {
 	return seasonPackEligible(missingCount) && seriesType != "anime"
 }
 
-func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK, musicOK bool) {
-	if !moviesOK && !tvOK && !musicOK {
+func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]struct{}, moviesOK, tvOK, musicOK, booksOK, comicsOK, audiobooksOK bool) {
+	if !moviesOK && !tvOK && !musicOK && !booksOK && !comicsOK && !audiobooksOK {
 		return
 	}
 	m.mu.Lock()
@@ -1290,6 +1355,15 @@ func (m *Module) pruneWantedNotInLibraries(ctx context.Context, seen map[string]
 			continue
 		}
 		if itemType == "music" && !musicOK {
+			continue
+		}
+		if itemType == "book" && !booksOK {
+			continue
+		}
+		if itemType == "comic" && !comicsOK {
+			continue
+		}
+		if itemType == "audiobook" && !audiobooksOK {
 			continue
 		}
 		// Series-pack requests (season 0 / episode 0) are not ListMissing rows.
@@ -1323,10 +1397,42 @@ func (m *Module) pruneSeasonZeroEpisodeDummies(ctx context.Context) {
 	}
 }
 
+func (m *Module) reconcileWantedItemID(ctx context.Context, itemID string, tmdbID int32, itemType string) string {
+	if itemID == "" || tmdbID <= 0 {
+		return itemID
+	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return itemID
+	}
+	var existingID string
+	err := db.QueryRowContext(ctx,
+		`SELECT item_id FROM wanted_items WHERE item_type = ? AND tmdb_id = ? ORDER BY CASE WHEN item_id LIKE 'tmdb_%' THEN 1 ELSE 0 END LIMIT 1`,
+		itemType, tmdbID,
+	).Scan(&existingID)
+	if err != nil {
+		return itemID
+	}
+	if strings.HasPrefix(itemID, "tmdb_") && !strings.HasPrefix(existingID, "tmdb_") {
+		return existingID
+	}
+	if !strings.HasPrefix(itemID, "tmdb_") && strings.HasPrefix(existingID, "tmdb_") {
+		_, _ = db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, existingID)
+		return itemID
+	}
+	if existingID != itemID && !strings.HasPrefix(itemID, "tmdb_") {
+		_, _ = db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, existingID)
+	}
+	return itemID
+}
+
 func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
 	if e.ItemID == "" {
 		return
 	}
+	e.ItemID = m.reconcileWantedItemID(ctx, e.ItemID, e.TmdbID, e.ItemType)
 	if isSeasonZeroEpisodeDummy(e.ItemType, int(e.SeasonNumber), int(e.EpisodeNumber)) {
 		slog.Debug("skip season-0 dummy wanted upsert", "item", e.ItemID, "title", e.Title)
 		return
@@ -2595,7 +2701,7 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_history`).Scan(&total)
 
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, completed_at, created_at, download_id FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, COALESCE(status_detail, ''), sent_at, completed_at, created_at, download_id FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		pageSize, offset,
 	)
 	if err != nil {
@@ -2605,10 +2711,10 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 
 	var records []*automationv1.DownloadRecord
 	for rows.Next() {
-		var id, wantedItemID, guid, title, indexer, downloadURL, downloadProto, status, createdAt, downloadID string
+		var id, wantedItemID, guid, title, indexer, downloadURL, downloadProto, status, statusDetail, createdAt, downloadID string
 		var size, score int64
 		var sentAt, completedAt sql.NullString
-		if err := rows.Scan(&id, &wantedItemID, &guid, &title, &indexer, &size, &score, &downloadURL, &downloadProto, &status, &sentAt, &completedAt, &createdAt, &downloadID); err != nil {
+		if err := rows.Scan(&id, &wantedItemID, &guid, &title, &indexer, &size, &score, &downloadURL, &downloadProto, &status, &statusDetail, &sentAt, &completedAt, &createdAt, &downloadID); err != nil {
 			slog.Error("scan history row", "error", err)
 			continue
 		}
@@ -2617,7 +2723,8 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 			Guid: guid, Title: title, Indexer: indexer,
 			Size: size, Score: int32(score),
 			DownloadUrl: downloadURL, DownloadProtocol: downloadProto,
-			Status: status, SentAt: sentAt.String,
+			Status: status, StatusDetail: statusDetail, StatusLabel: HistoryStatusLabel(status, statusDetail),
+			SentAt:      sentAt.String,
 			CompletedAt: completedAt.String, CreatedAt: createdAt,
 			DownloadId: downloadID,
 		})

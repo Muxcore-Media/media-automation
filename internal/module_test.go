@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	autov1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 func newTestModule(t *testing.T) *Module {
@@ -444,7 +444,7 @@ func TestPruneWantedNotInLibraries(t *testing.T) {
 		"movie:keep": {},
 		"tv:ep_keep": {},
 	}
-	m.pruneWantedNotInLibraries(ctx, seen, true, true, false)
+	m.pruneWantedNotInLibraries(ctx, seen, true, true, false, false, false, false)
 
 	queue, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
 	if err != nil {
@@ -471,7 +471,7 @@ func TestPruneWantedKeepsSeriesPackDropsSpecialsPack(t *testing.T) {
 		SeasonNumber: 1, EpisodeNumber: 0, SeriesID: "tv_tos",
 	})
 	seen := map[string]struct{}{"tv:tv_tos:S1:pack": {}}
-	m.pruneWantedNotInLibraries(ctx, seen, true, true, false)
+	m.pruneWantedNotInLibraries(ctx, seen, true, true, false, false, false, false)
 	m.pruneSeasonZeroEpisodeDummies(ctx)
 
 	var nSeries, nS0, nS1 int

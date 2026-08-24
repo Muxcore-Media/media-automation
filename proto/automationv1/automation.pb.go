@@ -1149,6 +1149,8 @@ type DownloadRecord struct {
 	CompletedAt      string                 `protobuf:"bytes,12,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
 	CreatedAt        string                 `protobuf:"bytes,13,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	DownloadId       string                 `protobuf:"bytes,14,opt,name=download_id,json=downloadId,proto3" json:"download_id,omitempty"`
+	StatusDetail     string                 `protobuf:"bytes,15,opt,name=status_detail,json=statusDetail,proto3" json:"status_detail,omitempty"` // operator-facing reason when status is failed/stalled/import_failed
+	StatusLabel      string                 `protobuf:"bytes,16,opt,name=status_label,json=statusLabel,proto3" json:"status_label,omitempty"`    // human-readable label derived from status + status_detail
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1277,6 +1279,20 @@ func (x *DownloadRecord) GetCreatedAt() string {
 func (x *DownloadRecord) GetDownloadId() string {
 	if x != nil {
 		return x.DownloadId
+	}
+	return ""
+}
+
+func (x *DownloadRecord) GetStatusDetail() string {
+	if x != nil {
+		return x.StatusDetail
+	}
+	return ""
+}
+
+func (x *DownloadRecord) GetStatusLabel() string {
+	if x != nil {
+		return x.StatusLabel
 	}
 	return ""
 }
@@ -2437,7 +2453,7 @@ const file_proto_automationv1_automation_proto_rawDesc = "" +
 	"\x10SearchNowRequest\"G\n" +
 	"\x11SearchNowResponse\x12\x18\n" +
 	"\astarted\x18\x01 \x01(\bR\astarted\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x98\x03\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xe0\x03\n" +
 	"\x0eDownloadRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12$\n" +
 	"\x0ewanted_item_id\x18\x02 \x01(\tR\fwantedItemId\x12\x12\n" +
@@ -2455,7 +2471,9 @@ const file_proto_automationv1_automation_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\r \x01(\tR\tcreatedAt\x12\x1f\n" +
 	"\vdownload_id\x18\x0e \x01(\tR\n" +
-	"downloadId\"3\n" +
+	"downloadId\x12#\n" +
+	"\rstatus_detail\x18\x0f \x01(\tR\fstatusDetail\x12!\n" +
+	"\fstatus_label\x18\x10 \x01(\tR\vstatusLabel\"3\n" +
 	"\x16RemoveFromQueueRequest\x12\x19\n" +
 	"\bqueue_id\x18\x01 \x01(\tR\aqueueId\"\x19\n" +
 	"\x17RemoveFromQueueResponse\"m\n" +
@@ -2541,7 +2559,7 @@ const file_proto_automationv1_automation_proto_rawDesc = "" +
 	"\vRetryImport\x12).muxcore.automation.v1.RetryImportRequest\x1a*.muxcore.automation.v1.RetryImportResponse\x12v\n" +
 	"\x11ListDelayProfiles\x12/.muxcore.automation.v1.ListDelayProfilesRequest\x1a0.muxcore.automation.v1.ListDelayProfilesResponse\x12y\n" +
 	"\x12UpsertDelayProfile\x120.muxcore.automation.v1.UpsertDelayProfileRequest\x1a1.muxcore.automation.v1.UpsertDelayProfileResponse\x12p\n" +
-	"\x0fListCutoffUnmet\x12-.muxcore.automation.v1.ListCutoffUnmetRequest\x1a..muxcore.automation.v1.ListCutoffUnmetResponseBKZIgithub.com/Muxcore-Media/media-automation/proto/automationv1;automationv1b\x06proto3"
+	"\x0fListCutoffUnmet\x12-.muxcore.automation.v1.ListCutoffUnmetRequest\x1a..muxcore.automation.v1.ListCutoffUnmetResponseBKZIgithub.com/Muxcore-Media/contracts-automation/muxcore/automation/v1;automationv1b\x06proto3"
 
 var (
 	file_proto_automationv1_automation_proto_rawDescOnce sync.Once

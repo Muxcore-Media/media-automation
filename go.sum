@@ -4,7 +4,7 @@ github.com/Muxcore-Media/contracts-indexer v0.1.0 h1:LFBFdvyiQlI7u1DP0/kneSm+PpB
 github.com/Muxcore-Media/contracts-indexer v0.1.0/go.mod h1:e2vy6l8mQPoCAi9kvWdfUkEcRz3M5LDMVk8/xqu+CtE=
 github.com/Muxcore-Media/contracts-media v0.1.0 h1:kjUfy9U5nPvImjAnfGpiLjRxp739YH2eA93c+tZ7nW8=
 github.com/Muxcore-Media/contracts-media v0.1.0/go.mod h1:cYmz14RYUL0VxnVRNSCz0n1HOjjL1yzbpDWdWdkd+BI=
-github.com/Muxcore-Media/core v0.5.4 h1:N13USUVusPKYgGPDdeJgSEpkerNyUEyOOJi1oh3BWes=
+github.com/Muxcore-Media/core v0.5.4 h1:vwSBpQ7LCXiSS/QwI6z6xk9BXNZO3/WmthHXl9OV0dc=
 github.com/Muxcore-Media/core v0.5.4/go.mod h1:dPC03/h+ap/geLApar3OA3OM7S+gZtF4Qbl5Vo+oPfg=
 github.com/Muxcore-Media/core/pkg/contracts v0.5.4 h1:PwUjHDoICO5pM1dtKToDeIHxnrqsX12UddafyifAwaQ=
 github.com/Muxcore-Media/core/pkg/contracts v0.5.4/go.mod h1:gbI+28IlviQlGYYoQj2DJVet/5LXLQtjFeSRo0a+8BI=

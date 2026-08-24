@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	autov1 "github.com/Muxcore-Media/media-automation/proto/automationv1"
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 // Admin-ui automation page sizes (see admin-ui/handler/automation.go).

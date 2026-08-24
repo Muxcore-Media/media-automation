@@ -6,10 +6,10 @@ require (
 	github.com/Muxcore-Media/contracts-downloader v0.1.0
 	github.com/Muxcore-Media/contracts-indexer v0.1.0
 	github.com/Muxcore-Media/contracts-media v0.1.0
-	github.com/Muxcore-Media/core v0.5.4
-	github.com/Muxcore-Media/core/pkg/contracts v0.5.4
-	github.com/Muxcore-Media/core/sdk/go/client v0.5.2
-	github.com/Muxcore-Media/core/sdk/go/module v0.5.2
+	github.com/Muxcore-Media/core v0.5.8
+	github.com/Muxcore-Media/core/pkg/contracts v0.5.8
+	github.com/Muxcore-Media/core/sdk/go/client v0.5.8
+	github.com/Muxcore-Media/core/sdk/go/module v0.5.8
 	github.com/Muxcore-Media/downloader-sabnzbd v0.1.0
 	github.com/Muxcore-Media/media-custom-formats v0.1.1
 	github.com/Muxcore-Media/media-movies v0.1.0
@@ -19,6 +19,7 @@ require (
 	google.golang.org/grpc v1.83.0
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0
+	github.com/Muxcore-Media/contracts-automation v0.1.0
 )
 
 require (
@@ -41,3 +42,5 @@ replace github.com/Muxcore-Media/media-music => ../media-music
 replace github.com/Muxcore-Media/contracts-media => ../contracts-media
 
 replace github.com/Muxcore-Media/downloader-sabnzbd => ../downloader-sabnzbd
+
+replace github.com/Muxcore-Media/contracts-automation => ../contracts-automation

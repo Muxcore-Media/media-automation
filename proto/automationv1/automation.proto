@@ -151,6 +151,8 @@ message DownloadRecord {
   string completed_at = 12;
   string created_at = 13;
   string download_id = 14;
+  string status_detail = 15; // operator-facing reason when status is failed/stalled/import_failed
+  string status_label = 16; // human-readable label derived from status + status_detail
 }
 
 message RemoveFromQueueRequest {

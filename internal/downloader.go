@@ -129,6 +129,8 @@ func (m *Module) findPreferredModule(ctx context.Context, capability, prefEnv st
 	if m.mc == nil {
 		return "", "", fmt.Errorf("not connected to core")
 	}
+	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
+	defer cancel()
 	modules, err := m.mc.Discovery.FindByCapability(ctx, capability)
 	if err != nil {
 		return "", "", fmt.Errorf("discover %s: %w", capability, err)

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Muxcore-Media/core/pkg/contracts"
-	scannerv1 "github.com/Muxcore-Media/media-scanner/proto/scannerv1"
+	scannerv1 "github.com/Muxcore-Media/contracts-scanner/muxcore/scanner/v1"
 	"google.golang.org/grpc"
 )
 
