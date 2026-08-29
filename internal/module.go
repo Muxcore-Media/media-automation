@@ -2473,6 +2473,10 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		slog.Info("skip dispatch: release exceeds size cap", "title", req.GetTitle(), "size", req.GetSize(), "max_bytes", m.maxReleaseBytesLocked())
 		return nil, fmt.Errorf("release size exceeds max_release_gb")
 	}
+	if err := validateDispatchGrab(req); err != nil {
+		slog.Warn("skip dispatch: fixture downloader mismatch", "title", req.GetTitle(), "indexer", req.GetIndexerName(), "error", err)
+		return nil, err
+	}
 
 	protocol := normalizeProtocol(req.GetDownloadProtocol())
 	if req.GetDownloadProtocol() == "" {
