@@ -151,6 +151,9 @@ func (m *Module) findPreferredModule(ctx context.Context, capability, prefEnv st
 		if capability == "downloader" && strings.Contains(mod.GetId(), "sabnzbd") {
 			continue
 		}
+		if capability == "downloader.torrent" && mod.GetId() == "downloader-qbittorrent" {
+			continue
+		}
 		if capability == "downloader.usenet" && mod.GetId() == "downloader-sabnzbd" {
 			continue
 		}
