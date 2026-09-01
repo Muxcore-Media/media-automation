@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
 	musicv1 "github.com/Muxcore-Media/media-music/proto/gen/muxcore/music/v1"
 )
 
@@ -23,7 +20,7 @@ func (m *Module) ensureMusic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial music: %w", err)
 	}

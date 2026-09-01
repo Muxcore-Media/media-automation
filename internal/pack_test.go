@@ -184,7 +184,7 @@ func TestSkipSeasonZeroPlaceholderWhenSeriesGrabbing(t *testing.T) {
 		results: []*indexerv1.SearchResult{{Guid: "g", Title: "Star Trek S03E24", DownloadUrl: "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff"}},
 	}}
 	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
-	m.searchAndStore(ctx, wantedID, "tv", "ep_tos_0_12", "Star Trek", 253, 1966, 0, 12, 0, "", "tv_tos", "", nil, true, 0, "")
+	m.searchAndStore(ctx, wantedID, "tv", "ep_tos_0_12", "Star Trek", 253, 1966, 0, 12, 0, "", "tv_tos", "", "", nil, true, 0, "")
 	if idx.n.Load() != 0 {
 		t.Fatalf("indexer searches=%d want 0", idx.n.Load())
 	}
@@ -232,7 +232,7 @@ func TestSearchAndStoreSkipsCoveredSeason(t *testing.T) {
 	}}
 	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
 
-	m.searchAndStore(ctx, wantedID, "tv", "ep_s15e02", "King of the Hill", 2122, 1997, 15, 2, 0, "", "tv_koth", "", nil, true, 0, "")
+	m.searchAndStore(ctx, wantedID, "tv", "ep_s15e02", "King of the Hill", 2122, 1997, 15, 2, 0, "", "tv_koth", "", "", nil, true, 0, "")
 	if idx.n.Load() != 0 {
 		t.Fatalf("indexer searches=%d want 0", idx.n.Load())
 	}
@@ -256,7 +256,7 @@ func TestSearchAndStoreStillSearchesOtherSeason(t *testing.T) {
 	}}
 	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
 
-	m.searchAndStore(ctx, wantedID, "tv", "ep_s14e01", "King of the Hill", 2122, 1997, 14, 1, 0, "", "tv_koth", "", nil, true, 0, "")
+	m.searchAndStore(ctx, wantedID, "tv", "ep_s14e01", "King of the Hill", 2122, 1997, 14, 1, 0, "", "tv_koth", "", "", nil, true, 0, "")
 	if idx.n.Load() == 0 {
 		t.Fatal("S14 should still search the indexer")
 	}
@@ -286,7 +286,7 @@ func TestSearchAndStoreSkipsWrongYearEpisodeForPack(t *testing.T) {
 	}}
 	m.testIndexerClients = map[string]indexerv1.IndexerServiceClient{"idx": idx}
 
-	m.searchAndStore(ctx, wantedID, "tv", "tv_franklin_s5", "Franklin", 908, 1997, 5, 0, 0, "", "tv_franklin", "", []string{cleanMatchTitle("Franklin")}, true, 0, "")
+	m.searchAndStore(ctx, wantedID, "tv", "tv_franklin_s5", "Franklin", 908, 1997, 5, 0, 0, "", "tv_franklin", "", "", []string{cleanMatchTitle("Franklin")}, true, 0, "")
 	if fake.calls != 0 {
 		t.Fatalf("wrong-year episode must not AddTorrent, calls=%d", fake.calls)
 	}

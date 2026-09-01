@@ -18,7 +18,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
@@ -89,6 +88,8 @@ type Module struct {
 	scannerClient     scannerv1.ScannerServiceClient
 	// testScannerClient, when set, skips discovery and is used for ImportPath (tests).
 	testScannerClient scannerv1.ScannerServiceClient
+	// testLibraryHTTP overrides libraryHTTPBase for httptest sync coverage.
+	testLibraryHTTP map[string]string
 }
 
 type Config struct {
@@ -157,6 +158,11 @@ func NewModule(cfg Config) *Module {
 			m.maxReleaseBytes = int64(n) * (1 << 30)
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("AUTOMATION_WANTED_SEARCH_LIMIT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			m.wantedSearchLimit = n
+		}
+	}
 	return m
 }
 
@@ -223,6 +229,7 @@ func (m *Module) Init(ctx context.Context) error {
 		`ALTER TABLE wanted_items ADD COLUMN clean_titles TEXT DEFAULT '[]'`,
 		`ALTER TABLE wanted_items ADD COLUMN current_score INTEGER DEFAULT 0`,
 		`ALTER TABLE wanted_items ADD COLUMN file_acquired_at TEXT DEFAULT ''`,
+		`ALTER TABLE wanted_items ADD COLUMN issue_number TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			_ = db.Close()
@@ -500,7 +507,7 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 		if _, ok := m.indexerClients[id]; ok {
 			continue
 		}
-		conn, dialErr := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, dialErr := dialPeer(addr)
 		if dialErr != nil {
 			slog.Warn("dial indexer failed", "module", id, "addr", addr, "error", dialErr)
 			continue
@@ -532,7 +539,7 @@ func (m *Module) ensureFormats(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial formats: %w", err)
 	}
@@ -555,7 +562,7 @@ func (m *Module) ensureMovies(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial movies: %w", err)
 	}
@@ -578,7 +585,7 @@ func (m *Module) ensureTV(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial tvshows: %w", err)
 	}
@@ -601,7 +608,7 @@ func (m *Module) ensureScanner(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial scanner: %w", err)
 	}
@@ -1157,6 +1164,7 @@ type wantedEntry struct {
 	AbsoluteNumber   int32
 	SeriesType       string
 	SeriesID         string
+	IssueNumber      string
 	QualityProfileID string
 	CleanTitles      []string
 }
@@ -1425,9 +1433,6 @@ func (m *Module) reconcileWantedItemID(ctx context.Context, itemID string, tmdbI
 		_, _ = db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, existingID)
 		return itemID
 	}
-	if existingID != itemID && !strings.HasPrefix(itemID, "tmdb_") {
-		_, _ = db.ExecContext(ctx, `DELETE FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, existingID)
-	}
 	return itemID
 }
 
@@ -1456,25 +1461,25 @@ func (m *Module) upsertWanted(ctx context.Context, e wantedEntry) {
 	id := fmt.Sprintf("w_%s_%s", e.ItemType, e.ItemID)
 	cleanJSON := encodeCleanTitles(e.CleanTitles)
 	_, err := m.db.ExecContext(ctx,
-		`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, quality_profile_id, absolute_number, series_type, series_id, clean_titles, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO wanted_items (id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, monitored, missing, quality_profile_id, absolute_number, series_type, series_id, issue_number, clean_titles, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(item_type, item_id) DO UPDATE SET
 		   tmdb_id = excluded.tmdb_id,
 		   title = excluded.title,
 		   year = excluded.year,
 		   season_number = excluded.season_number,
 		   episode_number = excluded.episode_number,
-		   monitored = 1,
 		   missing = 1,
 		   quality_profile_id = excluded.quality_profile_id,
 		   absolute_number = excluded.absolute_number,
 		   series_type = excluded.series_type,
 		   series_id = excluded.series_id,
+		   issue_number = CASE WHEN excluded.issue_number != '' THEN excluded.issue_number ELSE wanted_items.issue_number END,
 		   clean_titles = excluded.clean_titles,
 		   updated_at = excluded.updated_at`,
 		id, e.ItemType, e.ItemID, e.TmdbID, e.Title, e.Year,
 		e.SeasonNumber, e.EpisodeNumber, e.QualityProfileID,
-		e.AbsoluteNumber, e.SeriesType, e.SeriesID, cleanJSON, now, now,
+		e.AbsoluteNumber, e.SeriesType, e.SeriesID, e.IssueNumber, cleanJSON, now, now,
 	)
 	if err != nil {
 		slog.Debug("upsert wanted", "error", err, "item", e.ItemID)
@@ -1711,13 +1716,13 @@ func (m *Module) searchQueuedItems(force bool) {
 	grabbing := m.seriesWithGrabs(context.Background())
 
 	type wantedRow struct {
-		id, itemType, itemID, title, profileID, seriesType, seriesID, cleanRaw, fileAcquiredAt string
-		tmdbID, year, seasonNum, epNum, absNum, missing, currentScore                          int64
-		lastSearched                                                                           string
+		id, itemType, itemID, title, profileID, seriesType, seriesID, issueNumber, cleanRaw, fileAcquiredAt string
+		tmdbID, year, seasonNum, epNum, absNum, missing, currentScore                                       int64
+		lastSearched                                                                                        string
 	}
 
 	// Drain rows before indexer RPCs so SQLite is not blocked across searches.
-	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(series_id, ''), COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, ''), COALESCE(last_searched, '') FROM wanted_items WHERE monitored = 1 ORDER BY missing DESC, last_searched ASC`)
+	rows, err := db.Query(`SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number, quality_profile_id, absolute_number, series_type, COALESCE(series_id, ''), COALESCE(issue_number, ''), COALESCE(clean_titles, '[]'), missing, current_score, COALESCE(file_acquired_at, ''), COALESCE(last_searched, '') FROM wanted_items WHERE monitored = 1 ORDER BY missing DESC, last_searched ASC`)
 	if err != nil {
 		slog.Error("query wanted items", "error", err)
 		return
@@ -1728,7 +1733,7 @@ func (m *Module) searchQueuedItems(force bool) {
 	now := time.Now()
 	for rows.Next() {
 		var r wantedRow
-		if err := rows.Scan(&r.id, &r.itemType, &r.itemID, &r.tmdbID, &r.title, &r.year, &r.seasonNum, &r.epNum, &r.profileID, &r.absNum, &r.seriesType, &r.seriesID, &r.cleanRaw, &r.missing, &r.currentScore, &r.fileAcquiredAt, &r.lastSearched); err != nil {
+		if err := rows.Scan(&r.id, &r.itemType, &r.itemID, &r.tmdbID, &r.title, &r.year, &r.seasonNum, &r.epNum, &r.profileID, &r.absNum, &r.seriesType, &r.seriesID, &r.issueNumber, &r.cleanRaw, &r.missing, &r.currentScore, &r.fileAcquiredAt, &r.lastSearched); err != nil {
 			slog.Error("scan wanted row", "error", err)
 			continue
 		}
@@ -1771,7 +1776,7 @@ func (m *Module) searchQueuedItems(force bool) {
 			slog.Warn("wanted search paused: indexer rate limit")
 			return
 		}
-		m.searchAndStore(context.Background(), r.id, r.itemType, r.itemID, r.title, int(r.tmdbID), int(r.year), int(r.seasonNum), int(r.epNum), int(r.absNum), r.seriesType, r.seriesID, r.profileID, decodeCleanTitles(r.cleanRaw), r.missing != 0, int(r.currentScore), r.fileAcquiredAt)
+		m.searchAndStore(context.Background(), r.id, r.itemType, r.itemID, r.title, int(r.tmdbID), int(r.year), int(r.seasonNum), int(r.epNum), int(r.absNum), r.seriesType, r.seriesID, r.issueNumber, r.profileID, decodeCleanTitles(r.cleanRaw), r.missing != 0, int(r.currentScore), r.fileAcquiredAt)
 		if gap > 0 && i+1 < len(batch) {
 			time.Sleep(gap)
 		}
@@ -1798,7 +1803,7 @@ func skipWantedSearch(lastSearched string, missing, upgrades bool, minAge time.D
 	return now.Sub(t) < minAge
 }
 
-func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, seriesID, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
+func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID, title string, tmdbID, year, season, episode, absolute int, seriesType, seriesID, issueNumber, profileID string, cleanTitles []string, missing bool, currentScore int, fileAcquiredAt string) {
 	if m.hasInFlightDownload(ctx, itemID) {
 		slog.Debug("skip search: in-flight download", "item", itemID)
 		return
@@ -1814,7 +1819,7 @@ func (m *Module) searchAndStore(ctx context.Context, wantedID, itemType, itemID,
 		return
 	}
 
-	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, 50, profileID, cleanTitles)
+	results := m.searchWithIndexer(ctx, itemType, title, year, season, episode, absolute, seriesType, issueNumber, 50, profileID, cleanTitles)
 	if o := m.seriesOverride(ctx, seriesID); o != nil {
 		results = applyReleaseGroupOverrides(results, o.PreferredGroups, o.IgnoredGroups)
 	}
@@ -1923,6 +1928,9 @@ func (m *Module) scoreWithFormatsFallback(ctx context.Context, results []*indexe
 		cleanTitles = []string{cleanMatchTitle(title)}
 	}
 	cleanTitles = usableSearchTitles(title, cleanTitles)
+	if !isVideoItemType(itemType) {
+		return scoreReleases(results, title, cleanTitles, year, itemType)
+	}
 	p := m.loadProfileDecision(ctx, profileID)
 	var scored []scoredRelease
 	if err := m.ensureFormats(ctx); err == nil {
@@ -1981,38 +1989,60 @@ type profileDecision struct {
 }
 
 func (m *Module) loadProfileDecision(ctx context.Context, profileID string) profileDecision {
-	p := profileDecision{UpgradeAllowed: true}
-	if err := m.ensureFormats(ctx); err != nil {
+	all := m.loadAllProfiles(ctx)
+	if profileID != "" {
+		if p, ok := all[profileID]; ok {
+			return p
+		}
+	}
+	for _, p := range all {
 		return p
+	}
+	return profileDecision{UpgradeAllowed: true}
+}
+
+func (m *Module) loadAllProfiles(ctx context.Context) map[string]profileDecision {
+	out := make(map[string]profileDecision)
+	if err := m.ensureFormats(ctx); err != nil {
+		return out
 	}
 	m.mu.RLock()
 	fc := m.formatsClient
 	m.mu.RUnlock()
 	resp, err := fc.ListProfiles(ctx, &formatsv1.ListProfilesRequest{})
 	if err != nil {
-		return p
+		return out
 	}
-	profiles := resp.GetProfiles()
-	var chosen *formatsv1.QualityProfile
-	if profileID != "" {
-		for _, pr := range profiles {
-			if pr.GetId() == profileID {
-				chosen = pr
-				break
-			}
+	for _, pr := range resp.GetProfiles() {
+		if pr == nil || pr.GetId() == "" {
+			continue
 		}
-	} else if len(profiles) > 0 {
-		chosen = profiles[0]
+		out[pr.GetId()] = profileDecision{
+			MinScore:            int(pr.GetMinScore()),
+			CutoffScore:         int(pr.GetCutoffScore()),
+			UpgradeAllowed:      pr.GetUpgradeAllowed(),
+			UpgradeDelayMinutes: int(pr.GetUpgradeDelayMinutes()),
+		}
 	}
-	if chosen == nil {
-		return p
+	return out
+}
+
+func isVideoItemType(itemType string) bool {
+	return itemType == "movie" || itemType == "tv"
+}
+
+func scoreNonVideoRelease(r *indexerv1.SearchResult) int {
+	score := 50
+	if r.GetSeeders() > 100 {
+		score += 10
+	} else if r.GetSeeders() > 30 {
+		score += 5
+	} else if r.GetSeeders() > 5 {
+		score += 2
+	} else if r.GetSeeders() == 0 && r.GetDownloadProtocol() == "http" {
+		score -= 5
 	}
-	return profileDecision{
-		MinScore:            int(chosen.GetMinScore()),
-		CutoffScore:         int(chosen.GetCutoffScore()),
-		UpgradeAllowed:      chosen.GetUpgradeAllowed(),
-		UpgradeDelayMinutes: int(chosen.GetUpgradeDelayMinutes()),
-	}
+	return score
 }
 
 func decideGrab(p profileDecision, missing bool, currentScore, candidateScore int, fileAcquiredAt, now time.Time) bool {
@@ -2118,6 +2148,9 @@ func scoreRelease(r *indexerv1.SearchResult, cleanTitles []string, year int, ite
 	if !releaseMatchesWanted(name, itemType, cleanTitles, year) {
 		return 0
 	}
+	if !isVideoItemType(itemType) {
+		return scoreNonVideoRelease(r)
+	}
 	score := 0
 
 	resolution := parseResolution(name)
@@ -2208,7 +2241,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 
 	results := m.searchWithIndexer(ctx, req.GetItemType(), req.GetQuery(),
 		int(req.GetYear()), int(req.GetSeason()), int(req.GetEpisode()),
-		int(req.GetAbsolute()), req.GetSeriesType(), int(req.GetLimit()), req.GetQualityProfileId(),
+		int(req.GetAbsolute()), req.GetSeriesType(), "", int(req.GetLimit()), req.GetQualityProfileId(),
 		[]string{cleanMatchTitle(req.GetQuery())})
 
 	var matches []*automationv1.ReleaseMatch
@@ -2231,7 +2264,7 @@ func (m *Module) SearchItem(ctx context.Context, req *automationv1.SearchItemReq
 	return &automationv1.SearchItemResponse{Matches: matches}, nil
 }
 
-func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType string, limit int, profileID string, cleanTitles []string) []scoredRelease {
+func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, year, season, episode, absolute int, seriesType, issueNumber string, limit int, profileID string, cleanTitles []string) []scoredRelease {
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
@@ -2249,6 +2282,12 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		searchType = "tv"
 	case "music":
 		searchType = "music"
+	case "book":
+		searchType = "book"
+	case "comic":
+		searchType = "comic"
+	case "audiobook":
+		searchType = "audiobook"
 	}
 
 	maxLimit := int32(limit)
@@ -2265,8 +2304,15 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	} else if itemType == "tv" && season > 0 && episode > 0 {
 		searchQuery = fmt.Sprintf("%s S%02dE%02d", query, season, episode)
 	}
-	if year > 0 && itemType == "movie" {
-		searchQuery = fmt.Sprintf("%s %d", searchQuery, year)
+	if year > 0 && (itemType == "movie" || itemType == "book" || itemType == "audiobook") {
+		searchQuery = fmt.Sprintf("%s %d", strings.TrimSpace(searchQuery), year)
+	}
+	if itemType == "comic" {
+		if n := strings.TrimSpace(issueNumber); n != "" {
+			searchQuery = fmt.Sprintf("%s %s", strings.TrimSpace(query), n)
+		} else if year > 0 {
+			searchQuery = fmt.Sprintf("%s %d", strings.TrimSpace(searchQuery), year)
+		}
 	}
 
 	req := &indexerv1.SearchRequest{

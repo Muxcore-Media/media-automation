@@ -122,13 +122,15 @@ func TestDispatchDownloadCompletedImportPath(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fakeScan.importPathCalls) == 1 && fakeScan.importPathCalls[0] == savePath {
+		calls := fakeScan.importPathCallsSnapshot()
+		if len(calls) == 1 && calls[0] == savePath {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(fakeScan.importPathCalls) != 1 || fakeScan.importPathCalls[0] != savePath {
-		t.Fatalf("ImportPath calls: got %v, want [%q]", fakeScan.importPathCalls, savePath)
+	calls := fakeScan.importPathCallsSnapshot()
+	if len(calls) != 1 || calls[0] != savePath {
+		t.Fatalf("ImportPath calls: got %v, want [%q]", calls, savePath)
 	}
 
 	var status, completedAt string

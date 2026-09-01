@@ -11,7 +11,6 @@ import (
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
 	usenetv1 "github.com/Muxcore-Media/downloader-sabnzbd/proto/gen/muxcore/usenet/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type downloaderPool struct {
@@ -67,7 +66,7 @@ func (m *Module) ensureTorrentDownloader(ctx context.Context) error {
 			return err
 		}
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial torrent downloader %s: %w", moduleID, err)
 	}
@@ -100,7 +99,7 @@ func (m *Module) ensureUsenetDownloader(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("no usenet downloader: %w", err)
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialPeer(addr)
 	if err != nil {
 		return fmt.Errorf("dial usenet downloader %s: %w", moduleID, err)
 	}

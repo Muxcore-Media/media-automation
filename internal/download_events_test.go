@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,16 +15,27 @@ import (
 
 type fakeScannerClient struct {
 	scannerv1.ScannerServiceClient
+	mu              sync.Mutex
 	importPathCalls []string
 	importPathErr   error
 }
 
 func (f *fakeScannerClient) ImportPath(ctx context.Context, in *scannerv1.ImportPathRequest, opts ...grpc.CallOption) (*scannerv1.ImportPathResponse, error) {
+	f.mu.Lock()
 	f.importPathCalls = append(f.importPathCalls, in.GetPath())
+	f.mu.Unlock()
 	if f.importPathErr != nil {
 		return nil, f.importPathErr
 	}
 	return &scannerv1.ImportPathResponse{FilesFound: 1, FilesImported: 1}, nil
+}
+
+func (f *fakeScannerClient) importPathCallsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.importPathCalls))
+	copy(out, f.importPathCalls)
+	return out
 }
 
 func insertHistoryWithDownloadID(t *testing.T, m *Module, histID, downloadID string) {
@@ -74,8 +86,9 @@ func TestRetryImportFailedMarksCompleted(t *testing.T) {
 	fake := &fakeScannerClient{}
 	m.testScannerClient = fake
 	m.retryImportFailed(ctx)
-	if len(fake.importPathCalls) != 1 || fake.importPathCalls[0] != save {
-		t.Fatalf("ImportPath calls: %v want [%q]", fake.importPathCalls, save)
+	calls := fake.importPathCallsSnapshot()
+	if len(calls) != 1 || calls[0] != save {
+		t.Fatalf("ImportPath calls: %v want [%q]", calls, save)
 	}
 	st, _ := historyStatus(t, m, "dl_retry_1")
 	if st != "completed" {
@@ -258,13 +271,15 @@ func TestDownloadCompletedImportsPath(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(fake.importPathCalls) == 1 && fake.importPathCalls[0] == savePath {
+		calls := fake.importPathCallsSnapshot()
+		if len(calls) == 1 && calls[0] == savePath {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(fake.importPathCalls) != 1 || fake.importPathCalls[0] != savePath {
-		t.Fatalf("ImportPath calls: got %v, want [%q]", fake.importPathCalls, savePath)
+	calls := fake.importPathCallsSnapshot()
+	if len(calls) != 1 || calls[0] != savePath {
+		t.Fatalf("ImportPath calls: got %v, want [%q]", calls, savePath)
 	}
 	var status, completedAt string
 	for time.Now().Before(deadline) {
@@ -296,8 +311,9 @@ func TestDownloadFailedMarksHistory(t *testing.T) {
 		Error: "disk full",
 	})
 
-	if len(fake.importPathCalls) != 0 {
-		t.Fatalf("ImportPath should not be called on failed, got %v", fake.importPathCalls)
+	calls := fake.importPathCallsSnapshot()
+	if len(calls) != 0 {
+		t.Fatalf("ImportPath should not be called on failed, got %v", calls)
 	}
 	status, completedAt := historyStatus(t, m, histID)
 	if status != "failed" {
@@ -319,8 +335,9 @@ func TestDownloadCompletedUnknownID(t *testing.T) {
 		SavePath: "/downloads/nowhere",
 	})
 
-	if len(fake.importPathCalls) != 0 {
-		t.Fatalf("ImportPath should not be called for unknown id, got %v", fake.importPathCalls)
+	calls := fake.importPathCallsSnapshot()
+	if len(calls) != 0 {
+		t.Fatalf("ImportPath should not be called for unknown id, got %v", calls)
 	}
 }
 

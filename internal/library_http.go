@@ -26,6 +26,11 @@ func libraryCompanionHTTPBase(dialAddr string) (string, error) {
 }
 
 func (m *Module) libraryHTTPBase(ctx context.Context, capability string) (string, error) {
+	if m.testLibraryHTTP != nil {
+		if base, ok := m.testLibraryHTTP[capability]; ok {
+			return base, nil
+		}
+	}
 	addr, err := m.findModuleByCapability(ctx, capability)
 	if err != nil {
 		return "", err

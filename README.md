@@ -1,6 +1,6 @@
 # Media Automation
 
-[![CI](https://git.zem.systems/muxcore/media-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/Muxcore-Media/media-automation/actions)
+[![CI](https://git.zem.systems/muxcore/media-automation/actions/workflows/ci.yml/badge.svg)](https://git.zem.systems/muxcore/media-automation/actions)
 [![Go Version](https://img.shields.io/badge/Go-1.26-blue)](https://go.dev/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
@@ -24,7 +24,8 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 
 ### Key Features
 
-- **Quality scoring** — prefers `media-custom-formats` `ScoreRelease` when available; falls back to local ranking by resolution (2160p > 1080p > 720p), format (Remux > BluRay > WEB-DL > HDTV), seeders, and size sanity
+- **Wanted library sync** — merges missing items from movies/TV (gRPC), music (gRPC `ListMissing`), and books/comics/audiobooks (HTTP `/api/missing` on companion port gRPC+1)
+- **Quality scoring** — `media-custom-formats` TRaSH scoring for movie/TV only; music/book/comic/audiobook use title-match + seeders fallback (no 2160p/Remux heuristics)
 - **Upgrade / cutoff / delay** — after import, keeps wanted items below profile cutoff when upgrades are allowed; re-searches and grabs only strictly better scores after `upgrade_delay_minutes`
 - **Protocol delay profiles** — waits before grab using seeded `delay_profiles` (default: torrent 15m, usenet 0)
 - **Per-series overrides** — optional `delay_minutes` plus preferred/ignored release groups (`series_overrides_json` setting or `AUTOMATION_SERIES_OVERRIDES_JSON`)
@@ -32,7 +33,7 @@ Admin UI ──→ media-automation ──→ indexer modules (parallel Search)
 - **Download dispatch** — sends selected releases to a downloader module. A season pack that is already `sent` or `completed` is not AddTorrent'd again; sibling episodes of the covered season skip indexer search. TV releases with a year glued to the title (`Franklin.2024`) must match the series year.
 - **Wanted items queue** — persistence via SQLite with monitoring and missing state
 - **Periodic RSS sync** — automatically searches for wanted items on an interval (default 15 minutes; mesh setting `rss_sync_minutes`)
-- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, `max_release_gb`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`, `keep_stalled_partials`)
+- **Mesh settings** — capability `settings`: `enable_automatic_search`, `enable_automatic_upgrades`, `rss_sync_minutes`, `wanted_search_limit`, `max_release_gb`, plus stall knobs (`stall_timeout_minutes`, `stall_auto_mode`, `stall_loop_minutes`, `keep_stalled_partials`)
 - **Download history** — tracks all dispatched downloads with status
 - **Stall / blacklist** — a torrent with no byte progress is given up after a configurable stall timeout (default 3h, or auto loops of 1h then 6h). That GUID is blacklisted for the current attempt loop so the next search dispatches the next-best release. After every available torrent has been tried, a new loop retries them with a longer stall.
 - **Import on complete** — on `download.completed`, asks media-scanner to `ImportPath` the torrent save path and marks history complete (or `import_failed`); `download.failed` marks history failed. On `media.*.file_added`, marks the wanted item owned (or removes it at cutoff / when upgrades disabled).
@@ -67,6 +68,10 @@ For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or w
 | `AUTOMATION_STALL_LOOP_MINUTES` | `60,360` | Comma-separated stall minutes per attempt loop (auto mode) |
 | `AUTOMATION_KEEP_STALLED_PARTIALS` | `false` | Keep stalled/failed torrent data and resume matching hashes |
 | `AUTOMATION_MAX_RELEASE_GB` | `80` | Skip indexer hits larger than this many GiB (`0` disables) |
+| `AUTOMATION_WANTED_SEARCH_LIMIT` | `8` | Max wanted items searched per RSS cycle |
+| `AUTOMATION_DOWNLOAD_DIR` | (from `MVP_DOWNLOADS_DIR`) | Torrent save path root for partial reuse and import |
+| `AUTOMATION_USENET_GRAB_BONUS` | `8` | Ranking bonus for usenet on missing items (see `internal/ranking.go`) |
+| `AUTOMATION_DEAD_TORRENT_PENALTY` | `45` | Score penalty when a torrent has zero seeders |
 
 ---
 
@@ -118,7 +123,19 @@ Send a selected release to the downloader.
 ```
 
 ### `AddToQueue` / `GetQueue` / `GetHistory`
-Queue management and history.
+Queue management and download history.
+
+### Operator RPCs
+
+| RPC | Purpose |
+|-----|---------|
+| `RemoveFromQueue` | Drop a wanted row; cancels in-flight grabs (`download_history` status `sent`) first |
+| `SetMonitored` | Pause/resume search for a queue item without deleting it |
+| `SearchNow` | One immediate wanted-search pass |
+| `RetryImport` | Re-run scanner `ImportPath` for `import_failed` / stalled history rows |
+| `ListBlocklist` / `ClearBlocklist` / `BlocklistRelease` | Per-wanted release blacklist |
+| `ListDelayProfiles` / `UpsertDelayProfile` | Protocol grab delay (torrent vs usenet) |
+| `ListCutoffUnmet` | Owned items below profile cutoff with upgrades enabled |
 
 ---
 

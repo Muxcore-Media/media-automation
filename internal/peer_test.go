@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+func TestMeshInsecureEnv(t *testing.T) {
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "true")
+	if !meshInsecure() {
+		t.Fatal("expected insecure when MUXCORE_INSECURE_DISABLE_TLS=true")
+	}
+	t.Setenv("MUXCORE_INSECURE_DISABLE_TLS", "false")
+	t.Setenv("MUXCORE_GRPC_INSECURE", "true")
+	if !meshInsecure() {
+		t.Fatal("expected insecure when MUXCORE_GRPC_INSECURE=true")
+	}
+}
+
 func TestWithPeerTimeoutAddsDeadline(t *testing.T) {
 	ctx, cancel := withPeerTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

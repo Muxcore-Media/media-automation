@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
@@ -53,8 +52,8 @@ func TestDispatch_RejectsLiveGrabInFixtureMode(t *testing.T) {
 }
 
 func TestValidateDispatchGrab_LiveDownloaderAllowsTorznab(t *testing.T) {
-	os.Unsetenv("DOWNLOADER_ENGINE")
-	os.Unsetenv("QBIT_FIXTURE")
+	t.Setenv("DOWNLOADER_ENGINE", "")
+	t.Setenv("QBIT_FIXTURE", "")
 	if err := validateDispatchGrab(&autov1.DispatchRequest{
 		Title:       "Steel Magnolias",
 		IndexerName: "Torznab",

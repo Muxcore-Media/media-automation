@@ -363,12 +363,12 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 		return
 	}
 	if ok {
-		switch strings.ToLower(strings.TrimSpace(snap.status)) {
-		case "error", "failed":
+		switch snap.status {
+		case cdlv1.TorrentStatus_TORRENT_STATUS_FAILED:
 			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
-			m.finishInflight(ctx, db, r, "failed", "torrent reported "+snap.status)
+			m.finishInflight(ctx, db, r, "failed", "torrent reported "+snap.status.String())
 			return
-		case "completed", "seeding":
+		case cdlv1.TorrentStatus_TORRENT_STATUS_COMPLETED:
 			if snap.savePath == "" {
 				return
 			}
@@ -459,7 +459,7 @@ func (m *Module) keepStalledPartialsLocked() bool {
 
 type torrentSnap struct {
 	downloaded int64
-	status     string
+	status     cdlv1.TorrentStatus
 	savePath   string
 	name       string
 }

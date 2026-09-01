@@ -3,7 +3,7 @@ module github.com/Muxcore-Media/media-automation
 go 1.26.5
 
 require (
-	github.com/Muxcore-Media/contracts-automation v0.1.0
+	github.com/Muxcore-Media/contracts-automation v0.1.1-0.20260824174909-b7b0cb83d8b3
 	github.com/Muxcore-Media/contracts-downloader v0.1.0
 	github.com/Muxcore-Media/contracts-indexer v0.1.0
 	github.com/Muxcore-Media/contracts-media v0.1.0

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
@@ -14,6 +15,21 @@ func (m *Module) RemoveFromQueue(ctx context.Context, req *automationv1.RemoveFr
 	if id == "" {
 		return nil, fmt.Errorf("queue_id required")
 	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	var itemID string
+	err := db.QueryRowContext(ctx, `SELECT item_id FROM wanted_items WHERE id = ?`, id).Scan(&itemID)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("queue item not found: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup queue item: %w", err)
+	}
+	m.cancelInflightDownloadsForWanted(ctx, itemID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.db == nil {
@@ -28,6 +44,106 @@ func (m *Module) RemoveFromQueue(ctx context.Context, req *automationv1.RemoveFr
 		return nil, fmt.Errorf("queue item not found: %s", id)
 	}
 	return &automationv1.RemoveFromQueueResponse{}, nil
+}
+
+func (m *Module) SetMonitored(ctx context.Context, req *automationv1.SetMonitoredRequest) (*automationv1.SetMonitoredResponse, error) {
+	id := strings.TrimSpace(req.GetQueueId())
+	if id == "" {
+		return nil, fmt.Errorf("queue_id required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	monitored := 0
+	if req.GetMonitored() {
+		monitored = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE wanted_items SET monitored = ?, updated_at = ? WHERE id = ?`,
+		monitored, now, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("set monitored: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, fmt.Errorf("queue item not found: %s", id)
+	}
+	item, err := m.queueItemByIDLocked(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &automationv1.SetMonitoredResponse{Item: item}, nil
+}
+
+func (m *Module) queueItemByIDLocked(ctx context.Context, id string) (*automationv1.QueueItem, error) {
+	var itemType, itemID, title, createdAt, updatedAt, profileID string
+	var tmdbID, year, seasonNum, epNum int64
+	var monitored, missing int
+	var lastSearched sql.NullString
+	err := m.db.QueryRowContext(ctx, `
+		SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number,
+		       monitored, missing, last_searched, created_at, updated_at, quality_profile_id
+		FROM wanted_items WHERE id = ?`, id,
+	).Scan(&id, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum,
+		&monitored, &missing, &lastSearched, &createdAt, &updatedAt, &profileID)
+	if err != nil {
+		return nil, fmt.Errorf("load queue item: %w", err)
+	}
+	return &automationv1.QueueItem{
+		Id: id, ItemType: itemType, ItemId: itemID,
+		TmdbId: int32(tmdbID), Title: title, Year: int32(year),
+		SeasonNumber: int32(seasonNum), EpisodeNumber: int32(epNum),
+		Monitored: monitored != 0, Missing: missing != 0,
+		LastSearched: lastSearched.String,
+		CreatedAt:    createdAt, UpdatedAt: updatedAt,
+		QualityProfileId: profileID,
+	}, nil
+}
+
+// cancelInflightDownloadsForWanted stops active grabs for a wanted item_id before queue removal.
+func (m *Module) cancelInflightDownloadsForWanted(ctx context.Context, itemID string) {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return
+	}
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, COALESCE(download_id, ''), COALESCE(download_protocol, '')
+		FROM download_history
+		WHERE wanted_item_id = ? AND status = 'sent'
+	`, itemID)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	type inflight struct {
+		id, downloadID, protocol string
+	}
+	var list []inflight
+	for rows.Next() {
+		var r inflight
+		if err := rows.Scan(&r.id, &r.downloadID, &r.protocol); err != nil {
+			continue
+		}
+		list = append(list, r)
+	}
+	for _, r := range list {
+		if r.downloadID != "" {
+			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+		}
+		if err := finishHistoryStatusWhere(ctx, db, r.id, "cancelled", "removed from queue", ` AND status = 'sent'`); err != nil {
+			continue
+		}
+	}
 }
 
 func (m *Module) ListBlocklist(ctx context.Context, req *automationv1.ListBlocklistRequest) (*automationv1.ListBlocklistResponse, error) {
@@ -233,6 +349,8 @@ func (m *Module) ListCutoffUnmet(ctx context.Context, req *automationv1.ListCuto
 	}
 	defer func() { _ = rows.Close() }()
 
+	profiles := m.loadAllProfiles(ctx)
+
 	var all []*automationv1.CutoffItem
 	for rows.Next() {
 		var id, itemType, itemID, title, profileID string
@@ -240,7 +358,17 @@ func (m *Module) ListCutoffUnmet(ctx context.Context, req *automationv1.ListCuto
 		if err := rows.Scan(&id, &itemType, &itemID, &title, &year, &profileID, &score); err != nil {
 			continue
 		}
-		p := m.loadProfileDecision(ctx, profileID)
+		p := profileDecision{UpgradeAllowed: true}
+		if profileID != "" {
+			if pr, ok := profiles[profileID]; ok {
+				p = pr
+			}
+		} else {
+			for _, pr := range profiles {
+				p = pr
+				break
+			}
+		}
 		if p.CutoffScore <= 0 {
 			continue
 		}

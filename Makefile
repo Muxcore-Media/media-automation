@@ -26,7 +26,7 @@ tidy:
 	$(GO) mod tidy
 
 proto:
-	PATH="$$HOME/go/bin:$$PATH" protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/automationv1/automation.proto
+	cd ../contracts-automation && $(MAKE) proto
 
 docker:
 	docker build -t ghcr.io/muxcore-media/$(BINARY):$(VERSION) .

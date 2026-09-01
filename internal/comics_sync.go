@@ -90,7 +90,7 @@ func (m *Module) syncWantedComics(ctx context.Context, seen map[string]struct{})
 			m.upsertWanted(ctx, wantedEntry{
 				ItemType: "comic", ItemID: item.IssueID,
 				Title: title, Year: item.Year,
-				SeriesID: item.SeriesID,
+				SeriesID: item.SeriesID, IssueNumber: strings.TrimSpace(item.Number),
 			})
 			totalUpserted++
 		}

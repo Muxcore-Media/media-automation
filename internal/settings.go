@@ -21,6 +21,7 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 	stallLoops := stallLoopCSV(m.stallLoopMinutes)
 	keepPartials := m.keepStalledPartials
 	maxGiB := m.maxReleaseBytes / (1 << 30)
+	wantedLimit := m.wantedSearchLimit
 	m.mu.RUnlock()
 	overridesJSON, _ := m.listSeriesOverridesJSON(context.Background())
 	return []contracts.SettingDef{
@@ -106,6 +107,15 @@ func (m *Module) settingsDefs() []contracts.SettingDef {
 			Group:       "Automation",
 		},
 		{
+			Key:         "wanted_search_limit",
+			Label:       "Wanted search limit",
+			Type:        contracts.SettingTypeInt,
+			Default:     "8",
+			Value:       strconv.Itoa(wantedLimit),
+			Description: "Maximum wanted items searched per RSS cycle (missing first, then upgrades). Env override: AUTOMATION_WANTED_SEARCH_LIMIT.",
+			Group:       "Automation",
+		},
+		{
 			Key:         "series_overrides_json",
 			Label:       "Per-series overrides (JSON)",
 			Type:        contracts.SettingTypeString,
@@ -178,6 +188,15 @@ func (m *Module) updateSetting(key, value string) error {
 		}
 		m.mu.Lock()
 		m.maxReleaseBytes = int64(n) * (1 << 30)
+		m.mu.Unlock()
+		return nil
+	case "wanted_search_limit":
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid wanted_search_limit")
+		}
+		m.mu.Lock()
+		m.wantedSearchLimit = n
 		m.mu.Unlock()
 		return nil
 	case "series_overrides_json", "AUTOMATION_SERIES_OVERRIDES_JSON":
