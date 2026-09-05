@@ -9,41 +9,29 @@ jobs:
   release:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v7
+      - uses: Muxcore-Media/mvp/.github/actions/checkout-mirror@main
         with:
-          path: core
-          repository: Muxcore-Media/core
-      - uses: actions/checkout@v7
-        with:
-          path: contracts-downloader
-          repository: Muxcore-Media/contracts-downloader
-      - uses: actions/checkout@v7
-        with:
-          path: contracts-indexer
-          repository: Muxcore-Media/contracts-indexer
-      - uses: actions/checkout@v7
-        with:
-          path: downloader-native-torrent
-          repository: Muxcore-Media/downloader-native-torrent
-      - uses: actions/checkout@v7
-        with:
-          path: media-custom-formats
-          repository: Muxcore-Media/media-custom-formats
-      - uses: actions/checkout@v7
-        with:
-          path: media-movies
-          repository: Muxcore-Media/media-movies
-      - uses: actions/checkout@v7
-        with:
-          path: media-scanner
-          repository: Muxcore-Media/media-scanner
-      - uses: actions/checkout@v7
-        with:
-          path: media-tvshows
-          repository: Muxcore-Media/media-tvshows
-      - uses: actions/checkout@v7
-        with:
-          path: media-automation
+          token: ${{ secrets.MUXCORE_CI_TOKEN || github.token }}
+      - name: Checkout dependencies
+        env:
+          TOKEN: ${{ secrets.MUXCORE_CI_TOKEN || github.token }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/core.git" core
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/contracts-downloader.git" contracts-downloader
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/contracts-indexer.git" contracts-indexer
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/downloader-native-torrent.git" downloader-native-torrent
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/media-custom-formats.git" media-custom-formats
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/media-movies.git" media-movies
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/media-scanner.git" media-scanner
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/Muxcore-Media/media-tvshows.git" media-tvshows
+      - name: Prepare workspace layout
+        run: |
+          mkdir -p media-automation
+          shopt -s dotglob
+          for item in *; do
+            case "$item" in core|contracts-downloader|contracts-indexer|downloader-native-torrent|media-custom-formats|media-movies|media-scanner|media-tvshows|media-automation) continue ;; esac
+            mv "$item" media-automation/
+          done
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
