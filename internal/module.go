@@ -164,7 +164,7 @@ func (m *Module) Info() contracts.ModuleInfo {
 	return contracts.ModuleInfo{
 		ID:             m.id,
 		Name:           "Media Automation",
-		Version:        "0.1.43",
+		Version:        "0.1.45",
 		Roles:          []string{"automation"},
 		Description:    "Automation engine — searches searchers, scores releases, and dispatches downloads for wanted media",
 		Author:         "MuxCore",
@@ -2640,6 +2640,22 @@ func (m *Module) GetQueue(ctx context.Context, req *automationv1.GetQueueRequest
 		where = append(where, `item_type = ?`)
 		args = append(args, req.GetFilter())
 	}
+	if req.Missing != nil {
+		where = append(where, `missing = ?`)
+		if req.GetMissing() {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+	if req.Monitored != nil {
+		where = append(where, `monitored = ?`)
+		if req.GetMonitored() {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
 	if len(where) > 0 {
 		clause := ` WHERE ` + strings.Join(where, ` AND `)
 		query += clause
@@ -2704,13 +2720,30 @@ func (m *Module) GetHistory(ctx context.Context, req *automationv1.GetHistoryReq
 	}
 	offset := (page - 1) * pageSize
 
-	var total int
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_history`).Scan(&total)
+	query := `SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, COALESCE(status_detail, ''), sent_at, completed_at, created_at, download_id FROM download_history`
+	countQuery := `SELECT COUNT(*) FROM download_history`
+	var args []any
+	var where []string
+	if st := strings.TrimSpace(req.GetStatus()); st != "" {
+		where = append(where, `status = ?`)
+		args = append(args, st)
+	}
+	if wid := strings.TrimSpace(req.GetWantedItemId()); wid != "" {
+		where = append(where, `wanted_item_id = ?`)
+		args = append(args, wid)
+	}
+	if len(where) > 0 {
+		clause := ` WHERE ` + strings.Join(where, ` AND `)
+		query += clause
+		countQuery += clause
+	}
 
-	rows, err := db.QueryContext(ctx,
-		`SELECT id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, COALESCE(status_detail, ''), sent_at, completed_at, created_at, download_id FROM download_history ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-		pageSize, offset,
-	)
+	var total int
+	_ = db.QueryRowContext(ctx, countQuery, args...).Scan(&total)
+	query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	qargs := append(args, pageSize, offset)
+
+	rows, err := db.QueryContext(ctx, query, qargs...)
 	if err != nil {
 		return nil, fmt.Errorf("query history: %w", err)
 	}

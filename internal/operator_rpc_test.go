@@ -57,6 +57,65 @@ func TestRemoveFromQueueAndBlocklist(t *testing.T) {
 	}
 }
 
+func TestUpdateQueueItemByLibraryID(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	if _, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		ItemType: "movie", ItemId: "mv1", Title: "Dune", Year: 2021, QualityProfileId: "qp_hd",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	up, err := m.UpdateQueueItem(ctx, &autov1.UpdateQueueItemRequest{
+		QueueId: "mv1", QualityProfileId: "qp_uhd",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Item.GetQualityProfileId() != "qp_uhd" || up.Item.GetItemId() != "mv1" {
+		t.Fatalf("%+v", up.Item)
+	}
+	q, err := m.GetQueue(ctx, &autov1.GetQueueRequest{})
+	if err != nil || len(q.Items) != 1 || q.Items[0].QualityProfileId != "qp_uhd" {
+		t.Fatalf("queue after update: %+v err=%v", q, err)
+	}
+}
+
+func TestUpdateQueueItemSeriesProfile(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	if _, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		ItemType: "tv", ItemId: "e1", SeriesId: "s1", Title: "Orbital S01E01", Year: 2024,
+		SeasonNumber: 1, EpisodeNumber: 1, QualityProfileId: "qp_hd",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AddToQueue(ctx, &autov1.AddToQueueRequest{
+		ItemType: "tv", ItemId: "e2", SeriesId: "s1", Title: "Orbital S01E02", Year: 2024,
+		SeasonNumber: 1, EpisodeNumber: 2, QualityProfileId: "qp_hd",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpdateQueueItem(ctx, &autov1.UpdateQueueItemRequest{
+		QueueId: "s1", QualityProfileId: "qp_uhd",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := m.GetQueue(ctx, &autov1.GetQueueRequest{PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(q.Items) != 2 {
+		t.Fatalf("items=%d", len(q.Items))
+	}
+	for _, it := range q.Items {
+		if it.QualityProfileId != "qp_uhd" {
+			t.Fatalf("episode %s still %q", it.ItemId, it.QualityProfileId)
+		}
+	}
+}
+
 func TestDelayProfileCRUD(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()

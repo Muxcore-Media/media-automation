@@ -5,9 +5,84 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
+
+func (m *Module) UpdateQueueItem(ctx context.Context, req *automationv1.UpdateQueueItemRequest) (*automationv1.UpdateQueueItemResponse, error) {
+	id := strings.TrimSpace(req.GetQueueId())
+	if id == "" {
+		return nil, fmt.Errorf("queue_id required")
+	}
+	profile := strings.TrimSpace(req.GetQualityProfileId())
+	if req.Monitored == nil && profile == "" {
+		return nil, fmt.Errorf("monitored or quality_profile_id required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	sets := []string{`updated_at = ?`}
+	args := []any{time.Now().UTC().Format(time.RFC3339)}
+	if profile != "" {
+		sets = append(sets, `quality_profile_id = ?`)
+		args = append(args, profile)
+	}
+	if req.Monitored != nil {
+		sets = append(sets, `monitored = ?`)
+		if req.GetMonitored() {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+	args = append(args, id, id, id)
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE wanted_items SET `+strings.Join(sets, ", ")+` WHERE id = ? OR item_id = ? OR series_id = ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update queue item: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("queue item not found: %s", id)
+	}
+	item, err := m.loadQueueItemLocked(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &automationv1.UpdateQueueItemResponse{Item: item}, nil
+}
+
+func (m *Module) loadQueueItemLocked(ctx context.Context, id string) (*automationv1.QueueItem, error) {
+	row := m.db.QueryRowContext(ctx, `
+		SELECT id, item_type, item_id, tmdb_id, title, year, season_number, episode_number,
+		       monitored, missing, last_searched, created_at, updated_at, quality_profile_id,
+		       COALESCE(series_id, '')
+		FROM wanted_items
+		WHERE id = ? OR item_id = ? OR series_id = ?
+		ORDER BY CASE WHEN id = ? THEN 0 WHEN item_id = ? THEN 1 ELSE 2 END
+		LIMIT 1`,
+		id, id, id, id, id,
+	)
+	var queueID, itemType, itemID, title, createdAt, updatedAt, profileID, seriesID string
+	var tmdbID, year, seasonNum, epNum int64
+	var monitored, missing int
+	var lastSearched sql.NullString
+	if err := row.Scan(&queueID, &itemType, &itemID, &tmdbID, &title, &year, &seasonNum, &epNum, &monitored, &missing, &lastSearched, &createdAt, &updatedAt, &profileID, &seriesID); err != nil {
+		return nil, fmt.Errorf("load queue item: %w", err)
+	}
+	return &automationv1.QueueItem{
+		Id: queueID, ItemType: itemType, ItemId: itemID,
+		TmdbId: int32(tmdbID), Title: title, Year: int32(year),
+		SeasonNumber: int32(seasonNum), EpisodeNumber: int32(epNum),
+		Monitored: monitored != 0, Missing: missing != 0,
+		LastSearched: lastSearched.String, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		QualityProfileId: profileID, SeriesId: seriesID,
+	}, nil
+}
 
 func (m *Module) RemoveFromQueue(ctx context.Context, req *automationv1.RemoveFromQueueRequest) (*automationv1.RemoveFromQueueResponse, error) {
 	id := strings.TrimSpace(req.GetQueueId())

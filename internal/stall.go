@@ -457,6 +457,25 @@ func (m *Module) keepStalledPartialsLocked() bool {
 	return m.keepStalledPartials
 }
 
+func torrentStatusLabel(st cdlv1.TorrentStatus) string {
+	switch st {
+	case cdlv1.TorrentStatus_TORRENT_STATUS_DOWNLOADING:
+		return "downloading"
+	case cdlv1.TorrentStatus_TORRENT_STATUS_PAUSED:
+		return "paused"
+	case cdlv1.TorrentStatus_TORRENT_STATUS_COMPLETED:
+		return "completed"
+	case cdlv1.TorrentStatus_TORRENT_STATUS_FAILED:
+		return "failed"
+	case cdlv1.TorrentStatus_TORRENT_STATUS_STALLED:
+		return "stalled"
+	case cdlv1.TorrentStatus_TORRENT_STATUS_REMOVED:
+		return "removed"
+	default:
+		return "unknown"
+	}
+}
+
 type torrentSnap struct {
 	downloaded int64
 	status     string
@@ -547,7 +566,7 @@ func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torren
 	t := resp.GetTorrent()
 	return torrentSnap{
 		downloaded: t.GetDownloaded(),
-		status:     t.GetStatus(),
+		status:     torrentStatusLabel(t.GetStatus()),
 		savePath:   t.GetSavePath(),
 		name:       t.GetName(),
 	}, true, false

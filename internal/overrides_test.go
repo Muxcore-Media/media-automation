@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	autov1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 func TestParseReleaseGroup(t *testing.T) {
@@ -91,5 +93,36 @@ func TestSeriesOverrideLookupApplied(t *testing.T) {
 	}
 	if m.seriesOverride(ctx, "missing") != nil {
 		t.Fatal("expected nil for unknown series")
+	}
+}
+
+func TestSeriesOverrideRPC(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+
+	up, err := m.UpsertSeriesOverride(ctx, &autov1.UpsertSeriesOverrideRequest{
+		Override: &autov1.SeriesOverride{
+			SeriesId: "s1", DelayMinutes: 45,
+			PreferredGroups: []string{"FLUX"}, IgnoredGroups: []string{"RARBG"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.Override.DelayMinutes != 45 || up.Override.PreferredGroups[0] != "FLUX" {
+		t.Fatalf("%+v", up.Override)
+	}
+	if got := m.delayMinutesForItem(ctx, "torrent", "s1"); got != 45 {
+		t.Fatalf("delay=%d", got)
+	}
+	list, err := m.ListSeriesOverrides(ctx, &autov1.ListSeriesOverridesRequest{})
+	if err != nil || len(list.Overrides) != 1 || list.Overrides[0].SeriesId != "s1" {
+		t.Fatalf("list %+v err=%v", list, err)
+	}
+	if _, err := m.DeleteSeriesOverride(ctx, &autov1.DeleteSeriesOverrideRequest{SeriesId: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.seriesOverride(ctx, "s1") != nil {
+		t.Fatal("expected deleted")
 	}
 }

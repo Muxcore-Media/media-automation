@@ -185,6 +185,24 @@ func TestGetQueueFilter(t *testing.T) {
 	}
 }
 
+func TestGetQueueMissingFilter(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m-miss", TmdbId: 1, Title: "Missing"})
+	_, _ = m.AddToQueue(ctx, &autov1.AddToQueueRequest{ItemType: "movie", ItemId: "m-have", TmdbId: 2, Title: "On Disk"})
+	if _, err := m.db.Exec(`UPDATE wanted_items SET missing = 0 WHERE item_id = 'm-have'`); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	got, err := m.GetQueue(ctx, &autov1.GetQueueRequest{Missing: &yes, Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Total != 1 || len(got.Items) != 1 || got.Items[0].GetItemId() != "m-miss" {
+		t.Fatalf("want only missing title, got total=%d items=%v", got.Total, got.Items)
+	}
+}
+
 func TestGetHistoryEmpty(t *testing.T) {
 	m := newTestModule(t)
 	ctx := context.Background()

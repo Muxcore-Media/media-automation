@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.45] — 2026-09-08
+
+### Added
+- `ListSeriesOverrides` / `UpsertSeriesOverride` / `DeleteSeriesOverride` so households can set per-show grab delay and preferred/ignored release groups without editing `AUTOMATION_SERIES_OVERRIDES_JSON`.
+
+## [0.1.44] — 2026-09-08
+
+### Added
+- `UpdateQueueItem` applies `quality_profile_id` / `monitored` immediately. `queue_id` matches wanted `id`, library `item_id`, or TV `series_id` so a household profile change updates every episode row, not just the next library sync.
+
+### Fixed
+- Stall snapshots map downloader `TorrentStatus` enums to the string labels the reap loop already understands.
+
 ## [0.1.43] — 2026-08-22
 
 ### Added (cycle 133–134 hardening)

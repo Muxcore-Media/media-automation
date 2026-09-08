@@ -119,7 +119,7 @@ func TestReapStalledNoProgress(t *testing.T) {
 
 	fake := &fakeDownloaderClient{
 		torrents: map[string]*cdlv1.TorrentInfo{
-			"tor-stall": {Id: "tor-stall", Status: "downloading", Downloaded: 0},
+			"tor-stall": {Id: "tor-stall", Status: cdlv1.TorrentStatus_TORRENT_STATUS_DOWNLOADING, Downloaded: 0},
 		},
 	}
 	m.downloaderClient = fake
@@ -215,7 +215,7 @@ func TestReapKeepsProgressingDownload(t *testing.T) {
 	}
 	m.downloaderClient = &fakeDownloaderClient{
 		torrents: map[string]*cdlv1.TorrentInfo{
-			"tor-prog": {Id: "tor-prog", Status: "downloading", Downloaded: 5000},
+			"tor-prog": {Id: "tor-prog", Status: cdlv1.TorrentStatus_TORRENT_STATUS_DOWNLOADING, Downloaded: 5000},
 		},
 	}
 
@@ -243,7 +243,7 @@ func TestReapImmediateErrorStatus(t *testing.T) {
 	}
 	m.downloaderClient = &fakeDownloaderClient{
 		torrents: map[string]*cdlv1.TorrentInfo{
-			"tor-err": {Id: "tor-err", Status: "error"},
+			"tor-err": {Id: "tor-err", Status: cdlv1.TorrentStatus_TORRENT_STATUS_FAILED},
 		},
 	}
 	m.reapStalledDownloads(ctx, time.Now().UTC())
@@ -459,7 +459,7 @@ func TestReapStalledKeepsPartials(t *testing.T) {
 	}
 	fake := &fakeDownloaderClient{
 		torrents: map[string]*cdlv1.TorrentInfo{
-			"tor-keep": {Id: "tor-keep", Status: "downloading", Downloaded: 0},
+			"tor-keep": {Id: "tor-keep", Status: cdlv1.TorrentStatus_TORRENT_STATUS_DOWNLOADING, Downloaded: 0},
 		},
 	}
 	m.downloaderClient = fake

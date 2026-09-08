@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 )
 
 // seriesOverride holds per-series grab policy (delay + release groups).
@@ -202,6 +204,94 @@ func groupMatch(group string, list []string) bool {
 }
 
 // applyReleaseGroupOverrides filters ignored groups and boosts preferred ones.
+func (m *Module) ListSeriesOverrides(ctx context.Context, _ *automationv1.ListSeriesOverridesRequest) (*automationv1.ListSeriesOverridesResponse, error) {
+	m.mu.RLock()
+	db := m.db
+	m.mu.RUnlock()
+	if db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT series_id, delay_minutes, preferred_groups, ignored_groups FROM series_overrides ORDER BY series_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list series overrides: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*automationv1.SeriesOverride
+	for rows.Next() {
+		var id, pref, ign string
+		var delay sql.NullInt64
+		if err := rows.Scan(&id, &delay, &pref, &ign); err != nil {
+			continue
+		}
+		mins := int32(0)
+		if delay.Valid {
+			mins = int32(delay.Int64)
+		}
+		out = append(out, &automationv1.SeriesOverride{
+			SeriesId: id, DelayMinutes: mins,
+			PreferredGroups: splitGroups(pref), IgnoredGroups: splitGroups(ign),
+		})
+	}
+	return &automationv1.ListSeriesOverridesResponse{Overrides: out}, nil
+}
+
+func (m *Module) UpsertSeriesOverride(ctx context.Context, req *automationv1.UpsertSeriesOverrideRequest) (*automationv1.UpsertSeriesOverrideResponse, error) {
+	o := req.GetOverride()
+	id := strings.TrimSpace(o.GetSeriesId())
+	if id == "" {
+		return nil, fmt.Errorf("series_id required")
+	}
+	mins := o.GetDelayMinutes()
+	if mins < 0 {
+		mins = 0
+	}
+	if mins > 10080 {
+		return nil, fmt.Errorf("delay_minutes must be 0–10080")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := m.db.ExecContext(ctx, `
+		INSERT INTO series_overrides (series_id, delay_minutes, preferred_groups, ignored_groups, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(series_id) DO UPDATE SET
+		  delay_minutes = excluded.delay_minutes,
+		  preferred_groups = excluded.preferred_groups,
+		  ignored_groups = excluded.ignored_groups,
+		  updated_at = excluded.updated_at
+	`, id, mins, joinGroups(o.GetPreferredGroups()), joinGroups(o.GetIgnoredGroups()), now); err != nil {
+		return nil, fmt.Errorf("upsert series override: %w", err)
+	}
+	return &automationv1.UpsertSeriesOverrideResponse{
+		Override: &automationv1.SeriesOverride{
+			SeriesId: id, DelayMinutes: mins,
+			PreferredGroups: splitGroups(joinGroups(o.GetPreferredGroups())),
+			IgnoredGroups:   splitGroups(joinGroups(o.GetIgnoredGroups())),
+		},
+	}, nil
+}
+
+func (m *Module) DeleteSeriesOverride(ctx context.Context, req *automationv1.DeleteSeriesOverrideRequest) (*automationv1.DeleteSeriesOverrideResponse, error) {
+	id := strings.TrimSpace(req.GetSeriesId())
+	if id == "" {
+		return nil, fmt.Errorf("series_id required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.db == nil {
+		return nil, fmt.Errorf("not initialized")
+	}
+	if _, err := m.db.ExecContext(ctx, `DELETE FROM series_overrides WHERE series_id = ?`, id); err != nil {
+		return nil, fmt.Errorf("delete series override: %w", err)
+	}
+	return &automationv1.DeleteSeriesOverrideResponse{}, nil
+}
+
 func applyReleaseGroupOverrides(scored []scoredRelease, preferred, ignored []string) []scoredRelease {
 	if len(scored) == 0 || (len(preferred) == 0 && len(ignored) == 0) {
 		return scored
