@@ -834,6 +834,34 @@ func (m *Module) handleDownloadLifecycleEvent(ctx context.Context, eventType str
 	if histStatus != "sent" {
 		return
 	}
+	if itemType := m.wantedItemType(ctx, wantedID); itemType == "book" || itemType == "comic" || itemType == "audiobook" {
+		savePath := canonicalPartialSavePath(payload.SavePath, payload.InfoHash)
+		targets := importTargets(savePath, payload.Files)
+		m.recordDownloadIdentity(ctx, payload.ID, payload.InfoHash, savePath, filesFingerprint(payload.Files), encodeImportPaths(targets))
+		m.dropSiblingDownloads(ctx, wantedID, payload.ID)
+		go func(histID, downloadID, wantedID, itemType, savePath string, targets []string) {
+			impCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+			defer cancel()
+			imported, err := m.importLibraryPlusCompleted(impCtx, itemType, wantedID, targets)
+			if err != nil || imported == 0 {
+				detail := classifyImportError("imported 0 files")
+				if err != nil {
+					detail = classifyImportError(err.Error())
+				}
+				if uerr := finishHistoryStatus(context.Background(), db, histID, "import_failed", detail); uerr != nil {
+					slog.Warn("mark import_failed", "id", histID, "error", uerr)
+				}
+				m.publishImportFailed(downloadID, savePath, detail)
+				return
+			}
+			if err := finishHistoryStatus(context.Background(), db, histID, "completed", ""); err != nil {
+				slog.Warn("mark download completed", "id", histID, "error", err)
+			}
+			m.dropSiblingDownloads(context.Background(), wantedID, downloadID)
+			m.cleanupWantedPartials(wantedID, savePath)
+		}(histID, payload.ID, wantedID, itemType, savePath, targets)
+		return
+	}
 	if err := m.ensureScanner(ctx); err != nil {
 		slog.Warn("ensure scanner for import", "download_id", payload.ID, "error", err)
 		detail := classifyImportError(err.Error())
