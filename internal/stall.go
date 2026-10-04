@@ -67,6 +67,7 @@ func (m *Module) migrateStallTables(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE download_history ADD COLUMN files_fingerprint TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN import_paths TEXT DEFAULT ''`,
 		`ALTER TABLE download_history ADD COLUMN status_detail TEXT DEFAULT ''`,
+		`ALTER TABLE download_history ADD COLUMN downloader_module TEXT DEFAULT ''`,
 	} {
 		if _, err := db.ExecContext(ctx, col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrate stall columns: %w", err)
@@ -305,7 +306,9 @@ func (m *Module) stallWatchLoop() {
 
 type inflightRow struct {
 	id, wantedID, guid, url, downloadID, sentAt, lastProgressAt, protocol string
-	loop, lastBytes                                                       int
+	// module is the downloader the grab was sent to ("" for older rows).
+	module          string
+	loop, lastBytes int
 }
 
 func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
@@ -319,7 +322,7 @@ func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, wanted_item_id, guid, COALESCE(download_url, ''), COALESCE(download_id, ''),
 		       COALESCE(sent_at, created_at), COALESCE(attempt_loop, 1), COALESCE(last_bytes, 0),
-		       COALESCE(last_progress_at, ''), COALESCE(download_protocol, '')
+		       COALESCE(last_progress_at, ''), COALESCE(download_protocol, ''), COALESCE(downloader_module, '')
 		FROM download_history WHERE status = 'sent'
 	`)
 	if err != nil {
@@ -329,7 +332,7 @@ func (m *Module) reapStalledDownloads(ctx context.Context, now time.Time) {
 	var batch []inflightRow
 	for rows.Next() {
 		var r inflightRow
-		if err := rows.Scan(&r.id, &r.wantedID, &r.guid, &r.url, &r.downloadID, &r.sentAt, &r.loop, &r.lastBytes, &r.lastProgressAt, &r.protocol); err != nil {
+		if err := rows.Scan(&r.id, &r.wantedID, &r.guid, &r.url, &r.downloadID, &r.sentAt, &r.loop, &r.lastBytes, &r.lastProgressAt, &r.protocol, &r.module); err != nil {
 			slog.Warn("scan in-flight download", "error", err)
 			continue
 		}
@@ -356,16 +359,16 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 		progressAt = now
 	}
 
-	snap, ok, missing := m.torrentSnapshot(ctx, r.downloadID)
+	snap, ok, missing := m.torrentSnapshot(ctx, r.module, r.downloadID)
 	if missing {
-		m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+		m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 		m.finishInflight(ctx, db, r, "stalled", "downloader no longer has torrent")
 		return
 	}
 	if ok {
 		switch strings.ToLower(strings.TrimSpace(snap.status)) {
 		case "error", "failed":
-			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+			m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 			m.finishInflight(ctx, db, r, "failed", "torrent reported "+snap.status)
 			return
 		case "completed", "seeding":
@@ -393,7 +396,7 @@ func (m *Module) evaluateInflight(ctx context.Context, db *sql.DB, r inflightRow
 		return
 	}
 	reason := "stalled: no progress for " + timeout.String()
-	m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+	m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 	m.finishInflight(ctx, db, r, "stalled", reason)
 }
 
@@ -407,16 +410,12 @@ func (m *Module) finishInflight(ctx context.Context, db *sql.DB, r inflightRow, 
 	slog.Info("gave up on torrent", "id", r.id, "status", status, "title_guid", r.guid, "reason", reason)
 }
 
-func (m *Module) removeInflightDownload(ctx context.Context, protocol, downloadID string) {
+func (m *Module) removeInflightDownload(ctx context.Context, protocol, moduleID, downloadID string) {
 	if downloadID == "" {
 		return
 	}
 	if isUsenetProtocol(protocol) {
-		client := m.usenetClientLocked()
-		if client == nil {
-			_ = m.ensureUsenetDownloader(ctx)
-			client = m.usenetClientLocked()
-		}
+		client := m.usenetClientFor(ctx, moduleID)
 		if client == nil {
 			return
 		}
@@ -428,18 +427,14 @@ func (m *Module) removeInflightDownload(ctx context.Context, protocol, downloadI
 		}
 		return
 	}
-	m.removeInflightTorrent(ctx, downloadID)
+	m.removeInflightTorrent(ctx, moduleID, downloadID)
 }
 
-func (m *Module) removeInflightTorrent(ctx context.Context, downloadID string) {
+func (m *Module) removeInflightTorrent(ctx context.Context, moduleID, downloadID string) {
 	if downloadID == "" {
 		return
 	}
-	client := m.downloaderClientLocked()
-	if client == nil {
-		_ = m.ensureDownloader(ctx)
-		client = m.downloaderClientLocked()
-	}
+	client := m.torrentClientFor(ctx, moduleID)
 	if client == nil {
 		return
 	}
@@ -500,9 +495,9 @@ func (m *Module) evaluateInflightUsenet(ctx context.Context, db *sql.DB, r infli
 		progressAt = now
 	}
 
-	snap, ok, missing := m.usenetSnapshot(ctx, r.downloadID)
+	snap, ok, missing := m.usenetSnapshot(ctx, r.module, r.downloadID)
 	if missing {
-		m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+		m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 		m.finishInflight(ctx, db, r, "stalled", "downloader no longer has usenet job")
 		return
 	}
@@ -510,7 +505,7 @@ func (m *Module) evaluateInflightUsenet(ctx context.Context, db *sql.DB, r infli
 		st := strings.ToLower(strings.TrimSpace(snap.status))
 		switch {
 		case strings.Contains(st, "fail"):
-			m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+			m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 			m.finishInflight(ctx, db, r, "failed", "usenet job failed")
 			return
 		case strings.Contains(st, "complete"):
@@ -538,19 +533,15 @@ func (m *Module) evaluateInflightUsenet(ctx context.Context, db *sql.DB, r infli
 		return
 	}
 	reason := "stalled: no usenet progress for " + timeout.String()
-	m.removeInflightDownload(ctx, r.protocol, r.downloadID)
+	m.removeInflightDownload(ctx, r.protocol, r.module, r.downloadID)
 	m.finishInflight(ctx, db, r, "stalled", reason)
 }
 
-func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torrentSnap, bool, bool) {
+func (m *Module) torrentSnapshot(ctx context.Context, moduleID, downloadID string) (torrentSnap, bool, bool) {
 	if downloadID == "" {
 		return torrentSnap{}, false, true
 	}
-	client := m.downloaderClientLocked()
-	if client == nil {
-		_ = m.ensureDownloader(ctx)
-		client = m.downloaderClientLocked()
-	}
+	client := m.torrentClientFor(ctx, moduleID)
 	if client == nil {
 		return torrentSnap{}, false, false
 	}
@@ -572,15 +563,11 @@ func (m *Module) torrentSnapshot(ctx context.Context, downloadID string) (torren
 	}, true, false
 }
 
-func (m *Module) usenetSnapshot(ctx context.Context, jobID string) (usenetSnap, bool, bool) {
+func (m *Module) usenetSnapshot(ctx context.Context, moduleID, jobID string) (usenetSnap, bool, bool) {
 	if jobID == "" {
 		return usenetSnap{}, false, true
 	}
-	client := m.usenetClientLocked()
-	if client == nil {
-		_ = m.ensureUsenetDownloader(ctx)
-		client = m.usenetClientLocked()
-	}
+	client := m.usenetClientFor(ctx, moduleID)
 	if client == nil {
 		return usenetSnap{}, false, false
 	}

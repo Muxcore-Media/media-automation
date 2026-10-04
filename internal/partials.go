@@ -588,7 +588,7 @@ func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloa
 		return
 	}
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, COALESCE(download_id, ''), COALESCE(guid, ''), COALESCE(download_url, ''), COALESCE(attempt_loop, 1)
+		SELECT id, COALESCE(download_id, ''), COALESCE(guid, ''), COALESCE(download_url, ''), COALESCE(attempt_loop, 1), COALESCE(downloader_module, '')
 		FROM download_history
 		WHERE wanted_item_id = ?
 		  AND status IN ('sent', 'stalled')
@@ -600,20 +600,20 @@ func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloa
 	}
 	defer func() { _ = rows.Close() }()
 	type sib struct {
-		id, downloadID, guid, url string
-		loop                      int
+		id, downloadID, guid, url, module string
+		loop                              int
 	}
 	var list []sib
 	for rows.Next() {
 		var s sib
-		if err := rows.Scan(&s.id, &s.downloadID, &s.guid, &s.url, &s.loop); err != nil {
+		if err := rows.Scan(&s.id, &s.downloadID, &s.guid, &s.url, &s.loop, &s.module); err != nil {
 			continue
 		}
 		list = append(list, s)
 	}
 	for _, s := range list {
 		if s.downloadID != "" {
-			m.removeInflightTorrentDelete(ctx, s.downloadID, true)
+			m.removeInflightTorrentDelete(ctx, s.module, s.downloadID, true)
 		}
 		if err := finishHistoryStatusWhere(ctx, db, s.id, "superseded", "superseded by completed grab", ` AND status IN ('sent', 'stalled')`); err != nil {
 			slog.Warn("mark sibling superseded", "id", s.id, "error", err)
@@ -624,15 +624,11 @@ func (m *Module) dropSiblingDownloads(ctx context.Context, wantedID, keepDownloa
 	}
 }
 
-func (m *Module) removeInflightTorrentDelete(ctx context.Context, downloadID string, deleteFiles bool) {
+func (m *Module) removeInflightTorrentDelete(ctx context.Context, moduleID, downloadID string, deleteFiles bool) {
 	if downloadID == "" {
 		return
 	}
-	client := m.downloaderClientLocked()
-	if client == nil {
-		_ = m.ensureDownloader(ctx)
-		client = m.downloaderClientLocked()
-	}
+	client := m.torrentClientFor(ctx, moduleID)
 	if client == nil {
 		return
 	}
@@ -643,13 +639,13 @@ func (m *Module) removeInflightTorrentDelete(ctx context.Context, downloadID str
 	}
 }
 
-func (m *Module) insertDownloadHistory(ctx context.Context, db *sql.DB, histID, itemID, guid, title, indexer string, size, score int64, downloadURL, protocol, downloadID, savePath string, loop int, now string) error {
+func (m *Module) insertDownloadHistory(ctx context.Context, db *sql.DB, histID, itemID, guid, title, indexer string, size, score int64, downloadURL, protocol, downloadID, downloaderModule, savePath string, loop int, now string) error {
 	id := parseMagnetIdentity(downloadURL)
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at, infohash, infohash_v2, save_path, files_fingerprint)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?, 0, ?, ?, ?, ?, '')`,
+		INSERT INTO download_history (id, wanted_item_id, guid, title, indexer, size, score, download_url, download_protocol, status, sent_at, created_at, download_id, attempt_loop, last_bytes, last_progress_at, infohash, infohash_v2, save_path, files_fingerprint, downloader_module)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?, 0, ?, ?, ?, ?, '', ?)`,
 		histID, itemID, guid, title, indexer, size, score, downloadURL, protocol,
-		now, now, downloadID, loop, now, id.InfoHash, id.InfoHashV2, savePath,
+		now, now, downloadID, loop, now, id.InfoHash, id.InfoHashV2, savePath, downloaderModule,
 	)
 	return err
 }

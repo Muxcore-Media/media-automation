@@ -73,6 +73,10 @@ type Module struct {
 	testIndexerClients map[string]indexerv1.IndexerServiceClient
 
 	downloaderPool downloaderPool
+	// indexerHealth and downloaderHealth score peer modules so failing ones are
+	// skipped for a cooldown instead of being called on every search/dispatch.
+	indexerHealth    peerHealth
+	downloaderHealth peerHealth
 	// downloaderClient is kept for tests that inject a fake torrent client directly.
 	downloaderClient  cdlv1.DownloaderServiceClient
 	testTorrentClient cdlv1.DownloaderServiceClient
@@ -336,18 +340,7 @@ func (m *Module) Stop(ctx context.Context) error {
 		delete(m.indexerClients, id)
 	}
 	m.mu.Unlock()
-	m.downloaderPool.mu.Lock()
-	if m.downloaderPool.torrentConn != nil {
-		_ = m.downloaderPool.torrentConn.Close()
-		m.downloaderPool.torrentConn = nil
-		m.downloaderPool.torrentClient = nil
-	}
-	if m.downloaderPool.usenetConn != nil {
-		_ = m.downloaderPool.usenetConn.Close()
-		m.downloaderPool.usenetConn = nil
-		m.downloaderPool.usenetClient = nil
-	}
-	m.downloaderPool.mu.Unlock()
+	m.downloaderPool.closeAll()
 	if m.formatsConn != nil {
 		_ = m.formatsConn.Close()
 	}
@@ -2307,7 +2300,7 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 		Limit:    maxLimit,
 	}
 
-	raw, limited := parallelIndexerSearch(ctx, clients, req)
+	raw, limited := parallelIndexerSearch(ctx, clients, req, &m.indexerHealth)
 	if limited {
 		m.holdIndexer(15 * time.Minute)
 		slog.Warn("indexer rate limited; pausing wanted searches")
@@ -2347,29 +2340,45 @@ func (m *Module) searchWithIndexer(ctx context.Context, itemType, query string, 
 	return scored
 }
 
-// parallelIndexerSearch fans out Search to every client; failures are logged and skipped.
-func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.IndexerServiceClient, req *indexerv1.SearchRequest) ([]*indexerv1.SearchResult, bool) {
+// parallelIndexerSearch fans out Search to every usable client; failures are
+// logged and skipped. When health is non-nil, benched indexers are left out
+// (unless every indexer is benched) and each call's outcome is recorded.
+func parallelIndexerSearch(ctx context.Context, clients map[string]indexerv1.IndexerServiceClient, req *indexerv1.SearchRequest, health *peerHealth) ([]*indexerv1.SearchResult, bool) {
 	if len(clients) == 0 {
 		return nil, false
+	}
+	ids := make([]string, 0, len(clients))
+	for id := range clients {
+		ids = append(ids, id)
+	}
+	if health != nil {
+		if usable := health.filterUsable(ids); len(usable) < len(ids) {
+			slog.Info("skipping benched indexers", "searching", len(usable), "total", len(ids))
+			ids = usable
+		}
 	}
 	type batch struct {
 		id      string
 		results []*indexerv1.SearchResult
 		err     error
 	}
-	ch := make(chan batch, len(clients))
+	ch := make(chan batch, len(ids))
 	var wg sync.WaitGroup
-	for id, client := range clients {
+	for _, id := range ids {
 		wg.Add(1)
 		go func(id string, client indexerv1.IndexerServiceClient) {
 			defer wg.Done()
+			start := time.Now()
 			resp, err := client.Search(ctx, req)
+			if health != nil {
+				health.record(id, time.Since(start), err)
+			}
 			if err != nil {
 				ch <- batch{id: id, err: err}
 				return
 			}
 			ch <- batch{id: id, results: resp.GetResults()}
-		}(id, client)
+		}(id, clients[id])
 	}
 	go func() {
 		wg.Wait()
@@ -2511,43 +2520,29 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 		protocol = detectProtocolFromURL(req.GetDownloadUrl())
 	}
 
-	if err := m.ensureDownloaderForProtocol(ctx, protocol); err != nil {
-		return nil, fmt.Errorf("no downloader available: %w", err)
-	}
-
-	addCtx, addCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer addCancel()
-
-	var downloadID, savePath string
-	if isUsenetProtocol(protocol) {
-		client := m.usenetClientLocked()
-		if client == nil {
-			return nil, fmt.Errorf("no usenet downloader available")
-		}
-		addResp, err := client.AddNZB(addCtx, &usenetv1.AddNZBRequest{
-			NzbUrl:   req.GetDownloadUrl(),
-			Name:     req.GetTitle(),
-			Category: req.GetItemType(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("add nzb: %w", err)
-		}
-		downloadID = addResp.GetJobId()
-	} else {
-		client := m.torrentClientLocked()
-		if client == nil {
-			return nil, fmt.Errorf("no torrent downloader available")
-		}
+	savePath := ""
+	if !isUsenetProtocol(protocol) {
 		savePath = m.dispatchSavePath(context.Background(), req.GetItemId(), req.GetDownloadUrl(), req.GetGuid())
-		addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
-			TorrentUrl: req.GetDownloadUrl(),
-			SavePath:   savePath,
-			Category:   req.GetItemType(),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("add torrent: %w", err)
+	}
+	var downloadID, downloaderModule string
+	for attempt := 0; ; attempt++ {
+		if err := m.ensureDownloaderForProtocol(ctx, protocol); err != nil {
+			return nil, fmt.Errorf("no downloader available: %w", err)
 		}
-		downloadID = addResp.GetTorrentId()
+		moduleID := m.activeDownloader(protocol)
+		start := time.Now()
+		id, err := m.addToActiveDownloader(protocol, req, savePath)
+		m.downloaderHealth.record(moduleID, time.Since(start), err)
+		if err == nil {
+			downloadID, downloaderModule = id, moduleID
+			break
+		}
+		// Only fail over when the add certainly never reached the client, so a
+		// slow-but-alive client cannot end up with the same grab twice.
+		if attempt < maxDispatchFailover && moduleID != "" && isPeerUnreachable(err) && m.failoverDownloader(ctx, protocol, moduleID, err) {
+			continue
+		}
+		return nil, err
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -2558,7 +2553,7 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	if db != nil {
 		loop := m.attemptLoop(context.Background(), req.GetItemId())
 		if err := m.insertDownloadHistory(context.Background(), db, histID, req.GetItemId(), req.GetGuid(), req.GetTitle(), req.GetIndexerName(),
-			req.GetSize(), int64(req.GetScore()), req.GetDownloadUrl(), protocol, downloadID, savePath, loop, now); err != nil {
+			req.GetSize(), int64(req.GetScore()), req.GetDownloadUrl(), protocol, downloadID, downloaderModule, savePath, loop, now); err != nil {
 			slog.Warn("insert download_history", "error", err)
 		}
 	}
@@ -2585,11 +2580,46 @@ func (m *Module) Dispatch(ctx context.Context, req *automationv1.DispatchRequest
 	})
 	go m.publishEvent(context.Background(), contracts.EventDownloadDispatched, payload)
 
-	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", protocol, "id", downloadID)
+	slog.Info("dispatched download", "title", req.GetTitle(), "protocol", protocol, "id", downloadID, "downloader", downloaderModule)
 	return &automationv1.DispatchResponse{
 		DownloadId: downloadID,
 		Status:     "sent",
 	}, nil
+}
+
+// addToActiveDownloader sends one grab to the active downloader for protocol
+// and returns the downloader's id for it.
+func (m *Module) addToActiveDownloader(protocol string, req *automationv1.DispatchRequest, savePath string) (string, error) {
+	addCtx, addCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer addCancel()
+	if isUsenetProtocol(protocol) {
+		client := m.usenetClientLocked()
+		if client == nil {
+			return "", fmt.Errorf("no usenet downloader available")
+		}
+		addResp, err := client.AddNZB(addCtx, &usenetv1.AddNZBRequest{
+			NzbUrl:   req.GetDownloadUrl(),
+			Name:     req.GetTitle(),
+			Category: req.GetItemType(),
+		})
+		if err != nil {
+			return "", fmt.Errorf("add nzb: %w", err)
+		}
+		return addResp.GetJobId(), nil
+	}
+	client := m.torrentClientLocked()
+	if client == nil {
+		return "", fmt.Errorf("no torrent downloader available")
+	}
+	addResp, err := client.AddTorrent(addCtx, &cdlv1.AddTorrentRequest{
+		TorrentUrl: req.GetDownloadUrl(),
+		SavePath:   savePath,
+		Category:   req.GetItemType(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("add torrent: %w", err)
+	}
+	return addResp.GetTorrentId(), nil
 }
 
 func (m *Module) publishImportFailed(downloadID, path, errMsg string) {

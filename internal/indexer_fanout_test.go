@@ -90,7 +90,7 @@ func TestParallelIndexerSearchMerge(t *testing.T) {
 			{Guid: "2", Title: "Fight.Club.1999.2160p.Remux", IndexerName: "1337x", DownloadUrl: "magnet:2", Seeders: 5},
 		}},
 	}
-	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"})
+	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"}, nil)
 	if limited {
 		t.Fatal("unexpected rate limit")
 	}
@@ -113,7 +113,7 @@ func TestParallelIndexerSearchPartialFailure(t *testing.T) {
 		}},
 		"bad": &fakeIndexerClient{err: fmt.Errorf("boom")},
 	}
-	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"})
+	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"}, nil)
 	if limited {
 		t.Fatal("generic error should not count as rate limit")
 	}
@@ -129,7 +129,7 @@ func TestParallelIndexerSearchRateLimited(t *testing.T) {
 	clients := map[string]indexerv1.IndexerServiceClient{
 		"pb": &fakeIndexerClient{err: status.Error(codes.ResourceExhausted, "apibay 429")},
 	}
-	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Arthur"})
+	got, limited := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Arthur"}, nil)
 	if !limited {
 		t.Fatal("expected rateLimited")
 	}
@@ -147,7 +147,7 @@ func TestParallelIndexerSearchGUIDDedupeAcrossModules(t *testing.T) {
 			{Guid: "same", Title: "Fight.Club.1999.1080p.BluRay", IndexerName: "b", DownloadUrl: "magnet:b", Seeders: 50},
 		}},
 	}
-	raw, _ := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"})
+	raw, _ := parallelIndexerSearch(context.Background(), clients, &indexerv1.SearchRequest{Query: "Fight Club"}, nil)
 	scored := scoreReleases(raw, "Fight Club", []string{"fight club"}, 1999, "movie")
 	scored = dedupeScoredReleases(scored)
 	if len(scored) != 1 {
