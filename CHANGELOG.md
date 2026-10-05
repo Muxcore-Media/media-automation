@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.52] - 2026-10-05
+
+
+### Fixed
+- Data race on the core mesh client: `mc` is now an `atomic.Pointer` read through `coreClient()`, written by `dialCore` and swapped out on `Stop`; all unsynchronised reads removed.
+
 ## [0.1.51] - 2026-10-05
 
 

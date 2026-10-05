@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
@@ -47,7 +48,9 @@ type Module struct {
 
 	mu sync.RWMutex
 	db *sql.DB
-	mc *client.Client
+	// mc is the core mesh client, set asynchronously by dialCore. Always read
+	// it via coreClient(); nil means not (yet) connected.
+	mc atomic.Pointer[client.Client]
 
 	id       string
 	dbPath   string
@@ -333,10 +336,10 @@ func (m *Module) Stop(ctx context.Context) error {
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
 	}
-	m.mu.Lock()
-	if m.mc != nil {
-		_ = m.mc.Close()
+	if c := m.mc.Swap(nil); c != nil {
+		_ = c.Close()
 	}
+	m.mu.Lock()
 	for id, conn := range m.indexerConns {
 		_ = conn.Close()
 		delete(m.indexerConns, id)
@@ -409,19 +412,18 @@ func (m *Module) dialCore(ctx context.Context) {
 		slog.Error("media-automation: dial core", "error", err)
 		return
 	}
-	m.mu.Lock()
-	m.mc = c
-	m.mu.Unlock()
+	m.mc.Store(c)
 	slog.Info("media-automation: connected to core mesh", "addr", meshAddr)
 }
 
 func (m *Module) findModuleByCapability(ctx context.Context, cap string) (string, error) {
-	if m.mc == nil {
+	mc := m.coreClient()
+	if mc == nil {
 		return "", fmt.Errorf("not connected to core")
 	}
 	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
 	defer cancel()
-	modules, err := m.mc.Discovery.FindByCapability(ctx, cap)
+	modules, err := mc.Discovery.FindByCapability(ctx, cap)
 	if err != nil {
 		return "", fmt.Errorf("discover %s: %w", cap, err)
 	}
@@ -466,12 +468,13 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 	if m.testIndexerClients != nil {
 		return m.testIndexerClients, nil
 	}
-	if m.mc == nil {
+	mc := m.coreClient()
+	if mc == nil {
 		return nil, fmt.Errorf("not connected to core")
 	}
 	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
 	defer cancel()
-	modules, err := m.mc.Discovery.FindByCapability(ctx, "indexer")
+	modules, err := mc.Discovery.FindByCapability(ctx, "indexer")
 	if err != nil {
 		return nil, fmt.Errorf("discover indexer: %w", err)
 	}
@@ -632,11 +635,7 @@ func (m *Module) getScannerClient() scannerv1.ScannerServiceClient {
 
 // ── Event Subscriptions ─────────────────────────────────────────
 
-func (m *Module) coreClient() *client.Client {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.mc
-}
+func (m *Module) coreClient() *client.Client { return m.mc.Load() }
 
 func (m *Module) subscribeToMediaEvents() {
 	deadline := time.Now().Add(30 * time.Second)
@@ -2638,10 +2637,11 @@ func (m *Module) publishImportFailed(downloadID, path, errMsg string) {
 }
 
 func (m *Module) publishEvent(ctx context.Context, eventType string, payload []byte) {
-	if m.mc == nil {
+	mc := m.coreClient()
+	if mc == nil {
 		return
 	}
-	if err := m.mc.Events.Publish(ctx, eventType, m.id, payload); err != nil {
+	if err := mc.Events.Publish(ctx, eventType, m.id, payload); err != nil {
 		slog.Warn("publish event failed", "type", eventType, "error", err)
 	}
 }

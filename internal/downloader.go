@@ -126,12 +126,13 @@ func (m *Module) ensureDownloaderForProtocol(ctx context.Context, protocol strin
 }
 
 func (m *Module) findPreferredModule(ctx context.Context, capability, prefEnv string) (moduleID, addr string, err error) {
-	if m.mc == nil {
+	mc := m.coreClient()
+	if mc == nil {
 		return "", "", fmt.Errorf("not connected to core")
 	}
 	ctx, cancel := withPeerTimeout(ctx, peerDiscoveryTimeout)
 	defer cancel()
-	modules, err := m.mc.Discovery.FindByCapability(ctx, capability)
+	modules, err := mc.Discovery.FindByCapability(ctx, capability)
 	if err != nil {
 		return "", "", fmt.Errorf("discover %s: %w", capability, err)
 	}
