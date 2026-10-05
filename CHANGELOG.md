@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.46] - 2026-10-05
+
+
+### Fixed
+- Upserting a TV wanted row no longer deletes sibling episode / season-pack / series-pack rows that share the series `tmdb_id`. Placeholder reconciliation by `tmdb_id` now only merges into library rows for movies; for other types it just drops stale `tmdb_<id>` request placeholders. This restores season-pack coverage (siblings of a grabbed pack are skipped instead of re-searched).
+- Regenerated the legacy `proto/automationv1` stubs (protoc 25.3, protoc-gen-go v1.36.6, protoc-gen-go-grpc v1.5.1); the committed raw descriptor was corrupt and panicked at package init. Go API unchanged.
+
+### Changed
+- Go modules resolve from published tags only (no filesystem `replace`); `make proto` uses `$(PROTOC)` and plugins from `PATH`.
+- CI workflows synced from the umbrella templates (GitHub-hosted runners only).
+
 ## [0.1.45] — 2026-09-08
 
 ### Added

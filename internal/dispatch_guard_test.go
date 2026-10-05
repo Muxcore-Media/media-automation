@@ -53,8 +53,12 @@ func TestDispatch_RejectsLiveGrabInFixtureMode(t *testing.T) {
 }
 
 func TestValidateDispatchGrab_LiveDownloaderAllowsTorznab(t *testing.T) {
-	os.Unsetenv("DOWNLOADER_ENGINE")
-	os.Unsetenv("QBIT_FIXTURE")
+	for _, k := range []string{"DOWNLOADER_ENGINE", "QBIT_FIXTURE"} {
+		t.Setenv(k, "") // restores the original value on cleanup
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := validateDispatchGrab(&autov1.DispatchRequest{
 		Title:       "Steel Magnolias",
 		IndexerName: "Torznab",

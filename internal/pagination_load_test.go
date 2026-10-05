@@ -169,8 +169,15 @@ func TestQueueHistoryPaginationUnderAdminLoad(t *testing.T) {
 		t.Fatalf("concurrent pagination had %d errors in %v", errs.Load(), elapsed)
 	}
 	// Soft budget: admin page has an 8s deadline; this offline load should be far under.
-	if elapsed > 5*time.Second {
-		t.Fatalf("admin-load pagination took %v (want <5s)", elapsed)
+	// Race instrumentation of the pure-Go sqlite driver costs ~25x, so the wall-clock
+	// budget only reflects production speed in non-race builds; keep a generous
+	// ceiling under -race to still catch lock-contention regressions.
+	budget := 5 * time.Second
+	if raceEnabled {
+		budget = 30 * time.Second
+	}
+	if elapsed > budget {
+		t.Fatalf("admin-load pagination took %v (want <%v)", elapsed, budget)
 	}
 	t.Logf("admin-load pagination ok: workers=%d iters=%d elapsed=%v", workers, iters, elapsed)
 }

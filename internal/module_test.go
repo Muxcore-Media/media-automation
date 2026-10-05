@@ -844,3 +844,38 @@ func TestSkipWantedSearch(t *testing.T) {
 		t.Fatal("upgrades disabled should skip owned items")
 	}
 }
+
+func countWanted(t *testing.T, m *Module, itemType, itemID string) int {
+	t.Helper()
+	var n int
+	if err := m.db.QueryRow(`SELECT COUNT(*) FROM wanted_items WHERE item_type = ? AND item_id = ?`, itemType, itemID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TV rows share the series tmdb_id; upserting one episode must not delete its
+// siblings, but a real row should still replace a tmdb_ request placeholder.
+func TestUpsertWantedTVKeepsSiblingsDropsPlaceholder(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{ItemType: "tv", ItemID: "tmdb_2122", TmdbID: 2122, Title: "King of the Hill"})
+	m.upsertWanted(ctx, wantedEntry{ItemType: "tv", ItemID: "ep1", TmdbID: 2122, Title: "King of the Hill", SeasonNumber: 1, EpisodeNumber: 1, SeriesID: "tv_koth"})
+	m.upsertWanted(ctx, wantedEntry{ItemType: "tv", ItemID: "ep2", TmdbID: 2122, Title: "King of the Hill", SeasonNumber: 1, EpisodeNumber: 2, SeriesID: "tv_koth"})
+	if countWanted(t, m, "tv", "ep1") != 1 || countWanted(t, m, "tv", "ep2") != 1 {
+		t.Fatal("sibling episode rows must both remain")
+	}
+	if countWanted(t, m, "tv", "tmdb_2122") != 0 {
+		t.Fatal("tmdb_ placeholder should be replaced by real rows")
+	}
+}
+
+func TestUpsertWantedMovieMergesPlaceholder(t *testing.T) {
+	m := newTestModule(t)
+	ctx := context.Background()
+	m.upsertWanted(ctx, wantedEntry{ItemType: "movie", ItemID: "tmdb_603", TmdbID: 603, Title: "The Matrix"})
+	m.upsertWanted(ctx, wantedEntry{ItemType: "movie", ItemID: "mv_matrix", TmdbID: 603, Title: "The Matrix"})
+	if countWanted(t, m, "movie", "tmdb_603") != 0 || countWanted(t, m, "movie", "mv_matrix") != 1 {
+		t.Fatal("movie placeholder should merge into the library row")
+	}
+}

@@ -1,6 +1,7 @@
 .PHONY: build test lint clean fmt tidy proto docker docker-push ci help
 
 GO ?= go
+PROTOC ?= protoc
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS ?= -s -w -X main.version=$(VERSION)
 BINARY ?= media-automation
@@ -26,7 +27,7 @@ tidy:
 	$(GO) mod tidy
 
 proto:
-	PATH="$$HOME/go/bin:$$PATH" protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/automationv1/automation.proto
+	$(PROTOC) --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative proto/automationv1/automation.proto
 
 docker:
 	docker build -t ghcr.io/muxcore-media/$(BINARY):$(VERSION) .

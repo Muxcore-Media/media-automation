@@ -1428,6 +1428,13 @@ func (m *Module) pruneSeasonZeroEpisodeDummies(ctx context.Context) {
 	}
 }
 
+// reconcileWantedItemID merges a request placeholder (tmdb_<id>) with the
+// library-backed wanted row for the same title.
+//
+// Only movies have a one-row-per-tmdb_id grain. TV (and other grouped types)
+// share the series tmdb_id across many episode / season-pack / series-pack
+// rows, so for those only stale tmdb_ placeholder rows are dropped — sibling
+// rows must never be deleted or redirected.
 func (m *Module) reconcileWantedItemID(ctx context.Context, itemID string, tmdbID int32, itemType string) string {
 	if itemID == "" || tmdbID <= 0 {
 		return itemID
@@ -1436,6 +1443,14 @@ func (m *Module) reconcileWantedItemID(ctx context.Context, itemID string, tmdbI
 	db := m.db
 	m.mu.RUnlock()
 	if db == nil {
+		return itemID
+	}
+	if itemType != "movie" {
+		if !strings.HasPrefix(itemID, "tmdb_") {
+			_, _ = db.ExecContext(ctx,
+				`DELETE FROM wanted_items WHERE item_type = ? AND tmdb_id = ? AND substr(item_id, 1, 5) = 'tmdb_' AND item_id != ?`,
+				itemType, tmdbID, itemID)
+		}
 		return itemID
 	}
 	var existingID string
