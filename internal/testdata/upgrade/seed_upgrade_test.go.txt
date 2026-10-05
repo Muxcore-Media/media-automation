@@ -1,0 +1,97 @@
+//go:build upgradeseed
+
+// Throwaway seed test, run inside a worktree of an OLD tag to produce an
+// upgrade snapshot fixture. Not compiled in the current tree (see
+// testdata/upgrade/README.md). Usage:
+//
+//	cp seed_upgrade_test.go.txt internal/seed_upgrade_test.go
+//	UPGRADE_SEED_DB=/tmp/v.db GOWORK=off go test -tags upgradeseed -run TestUpgradeSeed ./internal/
+package internal
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestUpgradeSeed(t *testing.T) {
+	path := os.Getenv("UPGRADE_SEED_DB")
+	if path == "" {
+		t.Skip("UPGRADE_SEED_DB not set")
+	}
+	_ = os.Remove(path)
+	ctx := context.Background()
+
+	// Old store entry point: Module.Init creates the schema.
+	m := NewModule(Config{
+		DBPath:   path,
+		ImageDir: filepath.Join(t.TempDir(), "images"),
+		GRPCAddr: "127.0.0.1:0",
+		HTTPAddr: "127.0.0.1:0",
+	})
+	if err := m.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := m.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	hasTable := func(name string) bool {
+		var n int
+		_ = db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n)
+		return n > 0
+	}
+	hasColumn := func(table, col string) bool {
+		var n int
+		_ = db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, table, col).Scan(&n)
+		return n > 0
+	}
+
+	const ts = "2025-01-02T03:04:05Z"
+	// movies (collection_id / collection_name exist in every tag since v0.1.9).
+	exec(`INSERT INTO movies (id, tmdb_id, title, original_title, year, overview, tagline, runtime, vote_average, status, imdb_id, genres, poster_path, backdrop_path, monitored, has_file, quality_profile_id, root_folder_path, collection_id, collection_name, created_at, updated_at)
+		VALUES ('mv_550_seed', 550, 'Fight Club', 'Fight Club', 1999, 'An insomniac office worker.', 'Mischief. Mayhem. Soap.', 139, 8.4, 'Released', 'tt0137523', '["Drama","Thriller"]', '/poster550.jpg', '/back550.jpg', 1, 1, 'qp-hd', '/media/alice/movies', 0, '', ?, ?)`, ts, ts)
+	exec(`INSERT INTO movies (id, tmdb_id, title, original_title, year, overview, tagline, runtime, vote_average, status, imdb_id, genres, poster_path, backdrop_path, monitored, has_file, quality_profile_id, root_folder_path, collection_id, collection_name, created_at, updated_at)
+		VALUES ('mv_603_seed', 603, 'The Matrix', 'The Matrix', 1999, 'A hacker learns the truth.', 'Welcome to the Real World.', 136, 8.2, 'Released', 'tt0133093', '["Action","Science Fiction"]', '/poster603.jpg', '/back603.jpg', 1, 1, 'qp-uhd', '/media/alice/movies', 2344, 'The Matrix Collection', ?, ?)`, ts, ts)
+	exec(`INSERT INTO movies (id, tmdb_id, title, original_title, year, overview, monitored, has_file, created_at, updated_at)
+		VALUES ('mv_680_seed', 680, 'Pulp Fiction', 'Pulp Fiction', 1994, 'Intertwined crime stories.', 0, 0, ?, ?)`, ts, ts)
+	if hasColumn("movies", "release_date") {
+		exec(`UPDATE movies SET release_date = '1999-10-15' WHERE id = 'mv_550_seed'`)
+	}
+
+	exec(`INSERT INTO movie_files (id, movie_id, file_path, quality, size_bytes, container, created_at) VALUES
+		('mf_seed_1', 'mv_550_seed', '/media/alice/movies/Fight Club (1999)/Fight.Club.1999.1080p.mkv', 'Bluray-1080p', 8589934592, 'mkv', ?),
+		('mf_seed_2', 'mv_603_seed', '/media/alice/movies/The Matrix (1999)/The.Matrix.1999.2160p.mp4', 'WEBDL-2160p', 21474836480, 'mp4', ?)`, ts, ts)
+
+	exec(`INSERT INTO tags (id, label, created_at) VALUES ('tag_seed_1', 'favorites', ?), ('tag_seed_2', 'family-night', ?)`, ts, ts)
+	exec(`INSERT INTO item_tags (item_id, tag_id) VALUES ('mv_550_seed', 'tag_seed_1'), ('mv_603_seed', 'tag_seed_1'), ('mv_603_seed', 'tag_seed_2')`)
+
+	if hasTable("history") {
+		exec(`INSERT INTO history (id, event_type, item_id, title, source_title, quality, indexer, file_path, download_id, data_json, created_at) VALUES
+			('mh_seed_1', 'grab', 'mv_550_seed', 'Fight Club', 'Fight.Club.1999.1080p.BluRay.x264-GRP', 'Bluray-1080p', 'IndexerOne', '', 'dl-abc123', '{"size_bytes":8589934592}', ?),
+			('mh_seed_2', 'import', 'mv_550_seed', 'Fight Club', '', 'Bluray-1080p', '', '/media/alice/movies/Fight Club (1999)/Fight.Club.1999.1080p.mkv', 'dl-abc123', '{"file_id":"mf_seed_1","container":"mkv"}', ?)`, ts, ts)
+	}
+	if hasTable("movie_titles") {
+		exec(`INSERT OR IGNORE INTO movie_titles (id, movie_id, title, clean_title, source) VALUES
+			('mt_seed_1', 'mv_550_seed', 'Fight Club', 'fight club', 'primary'),
+			('mt_seed_2', 'mv_603_seed', 'The Matrix', 'matrix', 'primary'),
+			('mt_seed_3', 'mv_603_seed', 'Matrix', 'matrix alt', 'alternative')`)
+	}
+	if hasTable("collection_prefs") {
+		exec(`INSERT INTO collection_prefs (collection_id, name, monitored, search_on_add, quality_profile_id, root_folder_path, updated_at)
+			VALUES (2344, 'The Matrix Collection', 1, 0, 'qp-uhd', '/media/alice/movies', ?)`, ts)
+	}
+}

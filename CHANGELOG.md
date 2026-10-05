@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.47] - 2026-10-05
+
+
+### Added
+- Upgrade test (`internal/upgrade_test.go`, ADR-0015 / T-M2-06): opens a v0.1.8 snapshot database (`internal/testdata/upgrade/`) with the current code twice and asserts schema superset, seeded-row read-back, new-column defaults and integrity. No migration bugs found.
+
 ## [0.1.46] - 2026-10-05
 
 

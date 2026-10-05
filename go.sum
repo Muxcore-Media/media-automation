@@ -16,6 +16,8 @@ github.com/Muxcore-Media/core/sdk/go/client v0.6.0 h1:kb/FfuN9DWZMqSZlHO8z28+so3
 github.com/Muxcore-Media/core/sdk/go/client v0.6.0/go.mod h1:Bgg5Z92kY48EPV8+Pmv3RbtVwgCPKD7EFvHGQhcmI64=
 github.com/Muxcore-Media/core/sdk/go/module v0.6.0 h1:yCQVyDVgTWyxXggYaCPkpS2BhPtE3QhWseOLosqFdAg=
 github.com/Muxcore-Media/core/sdk/go/module v0.6.0/go.mod h1:Sm2YC2uxsc54IYeWpNMCeVT78Egzlg8HQLwjQKLvzoM=
+github.com/Muxcore-Media/core/sdk/go/module v0.6.1 h1:ce3P75yVgxUDCNfwa2SYyt1jnuLu6RxTK4jAjIh7U9c=
+github.com/Muxcore-Media/core/sdk/go/module v0.6.1/go.mod h1:lU40RJ3fZ5ImgtBNsr/i9NdIywlMrUZylPIpADQPy8A=
 github.com/Muxcore-Media/downloader-sabnzbd v0.1.2 h1:zdmsuW4omjSMuz2anGzVlCgh5Fglt23K7XKLl0QO8rE=
 github.com/Muxcore-Media/downloader-sabnzbd v0.1.2/go.mod h1:aAhqPyEoSXGYISNPNSDpHHr21spoEa7M2CAq8ogQguk=
 github.com/Muxcore-Media/media-custom-formats v0.1.12 h1:E8UsQJXkT1FjAcEWAdfPjcJzBxXsaJYUSTkpXNhwfkc=
