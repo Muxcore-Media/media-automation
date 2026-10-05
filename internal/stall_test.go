@@ -344,6 +344,7 @@ func TestReleaseInFlightMatchesCompletedSeasonPack(t *testing.T) {
 }
 
 func TestFailedReleaseNotRedispatchedSameLoop(t *testing.T) {
+	t.Setenv("DOWNLOADER_ENGINE", "live") // fixture-only guard is fail-closed by default (ADR-0016 §3)
 	m := newTestModule(t)
 	ctx := context.Background()
 	title := "The New Adventures of Winnie the Pooh S02 1080p DSNP WEBRip AAC2 0 x264"
@@ -509,6 +510,7 @@ func TestMagnetURLForReleasePrefersSiblingMagnet(t *testing.T) {
 }
 
 func TestSameHashHitsShareSavePathAndMergedTrackers(t *testing.T) {
+	t.Setenv("DOWNLOADER_ENGINE", "live") // fixture-only guard is fail-closed by default (ADR-0016 §3)
 	m := newTestModule(t)
 	m.mu.Lock()
 	m.keepStalledPartials = true
@@ -562,6 +564,7 @@ func TestSameHashHitsShareSavePathAndMergedTrackers(t *testing.T) {
 }
 
 func TestDispatchKeepPartialsSavePath(t *testing.T) {
+	t.Setenv("DOWNLOADER_ENGINE", "live") // fixture-only guard is fail-closed by default (ADR-0016 §3)
 	m := newTestModule(t)
 	m.mu.Lock()
 	m.keepStalledPartials = true
@@ -783,6 +786,7 @@ func TestRelocateStrayCwdPartials(t *testing.T) {
 }
 
 func TestKeptSavePathReusedOnDispatch(t *testing.T) {
+	t.Setenv("DOWNLOADER_ENGINE", "live") // fixture-only guard is fail-closed by default (ADR-0016 §3)
 	m := newTestModule(t)
 	hash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	now := time.Now().UTC().Format(time.RFC3339)

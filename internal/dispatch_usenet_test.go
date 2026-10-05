@@ -27,6 +27,7 @@ func (f *fakeUsenetClient) AddNZB(ctx context.Context, in *usenetv1.AddNZBReques
 }
 
 func TestDispatchUsenet(t *testing.T) {
+	t.Setenv("DOWNLOADER_ENGINE", "live") // fixture-only guard is fail-closed by default (ADR-0016 §3)
 	m := newTestModule(t)
 	fake := &fakeUsenetClient{jobID: "job-usenet-1"}
 	m.testUsenetClient = fake

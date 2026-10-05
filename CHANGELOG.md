@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.48] - 2026-10-05
+
+
+### Security
+- Fixture-only dispatch guard now fails closed (ADR-0016 §3, ADR-0008; NFR-SEC-010, FR-INS-003). Previously it was only enabled when `DOWNLOADER_ENGINE` was explicitly `fixture`/`fake`, so an unset engine allowed live indexer grabs. Now unset/empty/`fixture`/`fake` and unknown values (with a logged warning) enable the guard; only `DOWNLOADER_ENGINE=live` (or deprecated alias `anacrolix`) disables it. `QBIT_FIXTURE` still forces the guard on. Matches downloader-native-torrent v0.3.11.
+
 ## [0.1.47] - 2026-10-05
 
 

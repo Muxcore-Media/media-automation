@@ -67,6 +67,8 @@ For import-on-complete to work, register the downloader’s `DOWNLOAD_DIR` (or w
 | `AUTOMATION_STALL_LOOP_MINUTES` | `60,360` | Comma-separated stall minutes per attempt loop (auto mode) |
 | `AUTOMATION_KEEP_STALLED_PARTIALS` | `false` | Keep stalled/failed torrent data and resume matching hashes |
 | `AUTOMATION_MAX_RELEASE_GB` | `80` | Skip indexer hits larger than this many GiB (`0` disables) |
+| `DOWNLOADER_ENGINE` | unset (= `fixture`) | Fixture-only dispatch guard (ADR-0016 §3, ADR-0008). Unset/empty/`fixture`/`fake`: guard **on**, only grabs whose indexer name, GUID or URL contains `fixture` are dispatched. `live` (deprecated alias `anacrolix`): guard off, live acquisition explicitly enabled. Any other value: guard on and a warning is logged. Fails closed. |
+| `QBIT_FIXTURE` | unset | `1`/`true`/`on`/`yes` forces the fixture-only guard on even when `DOWNLOADER_ENGINE=live`. |
 
 ---
 
