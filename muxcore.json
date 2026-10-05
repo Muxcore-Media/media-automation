@@ -1,7 +1,7 @@
 {
   "name": "Media Automation",
   "description": "Automation engine for media libraries — monitors wanted items, searches searchers, scores releases, and dispatches downloads",
-  "version": "0.1.48",
+  "version": "0.1.49",
   "author": "MuxCore",
   "roles": [
     "automation"
