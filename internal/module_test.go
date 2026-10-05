@@ -348,6 +348,8 @@ func TestHealth(t *testing.T) {
 }
 
 func TestLifecycle(t *testing.T) {
+	// Plaintext gRPC listener for this lifecycle test (dev flag honoured by meshtls).
+	t.Setenv("MUXCORE_DEV_TLS_SKIP", "true")
 	m := NewModule(Config{
 		DBPath:   filepath.Join(t.TempDir(), "lifecycle.db"),
 		GRPCAddr: ":0",

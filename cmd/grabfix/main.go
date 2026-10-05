@@ -10,8 +10,7 @@ import (
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
 	cdlv1 "github.com/Muxcore-Media/contracts-downloader/muxcore/downloader/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/Muxcore-Media/core/sdk/go/module/meshtls"
 )
 
 type actionsFile struct {
@@ -48,7 +47,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	dlConn, err := grpc.NewClient(*dlAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dlConn, err := meshtls.Dial(*dlAddr)
 	if err != nil {
 		fatalf("dial downloader: %v", err)
 	}
@@ -106,7 +105,7 @@ func main() {
 		fmt.Printf("removed %s delete_files=%v (%s)\n", r.DownloadID, r.DeleteFiles, r.Release)
 	}
 
-	autoConn, err := grpc.NewClient(*autoAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	autoConn, err := meshtls.Dial(*autoAddr)
 	if err != nil {
 		fatalf("dial automation: %v", err)
 	}

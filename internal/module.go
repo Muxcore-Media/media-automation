@@ -17,11 +17,11 @@ import (
 	"time"
 
 	modulesdk "github.com/Muxcore-Media/core/sdk/go/module"
+	"github.com/Muxcore-Media/core/sdk/go/module/meshtls"
 	manifest "github.com/Muxcore-Media/media-automation"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
 	automationv1 "github.com/Muxcore-Media/contracts-automation/muxcore/automation/v1"
@@ -307,7 +307,11 @@ func (m *Module) Init(ctx context.Context) error {
 }
 
 func (m *Module) Start(ctx context.Context) error {
-	m.grpcSrv = grpc.NewServer()
+	srv, err := meshtls.NewServer()
+	if err != nil {
+		return fmt.Errorf("gRPC mesh TLS: %w", err)
+	}
+	m.grpcSrv = srv
 	automationv1.RegisterAutomationServiceServer(m.grpcSrv, m)
 	m.registerSettingsMesh(m.grpcSrv)
 
@@ -329,10 +333,10 @@ func (m *Module) Stop(ctx context.Context) error {
 	if m.grpcSrv != nil {
 		m.grpcSrv.GracefulStop()
 	}
+	m.mu.Lock()
 	if m.mc != nil {
 		_ = m.mc.Close()
 	}
-	m.mu.Lock()
 	for id, conn := range m.indexerConns {
 		_ = conn.Close()
 		delete(m.indexerConns, id)
@@ -405,7 +409,9 @@ func (m *Module) dialCore(ctx context.Context) {
 		slog.Error("media-automation: dial core", "error", err)
 		return
 	}
+	m.mu.Lock()
 	m.mc = c
+	m.mu.Unlock()
 	slog.Info("media-automation: connected to core mesh", "addr", meshAddr)
 }
 
@@ -503,7 +509,7 @@ func (m *Module) syncIndexers(ctx context.Context) (map[string]indexerv1.Indexer
 		if _, ok := m.indexerClients[id]; ok {
 			continue
 		}
-		conn, dialErr := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, dialErr := meshtls.Dial(addr)
 		if dialErr != nil {
 			slog.Warn("dial indexer failed", "module", id, "addr", addr, "error", dialErr)
 			continue
@@ -535,7 +541,7 @@ func (m *Module) ensureFormats(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := meshtls.Dial(addr)
 	if err != nil {
 		return fmt.Errorf("dial formats: %w", err)
 	}
@@ -558,7 +564,7 @@ func (m *Module) ensureMovies(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := meshtls.Dial(addr)
 	if err != nil {
 		return fmt.Errorf("dial movies: %w", err)
 	}
@@ -581,7 +587,7 @@ func (m *Module) ensureTV(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := meshtls.Dial(addr)
 	if err != nil {
 		return fmt.Errorf("dial tvshows: %w", err)
 	}
@@ -604,7 +610,7 @@ func (m *Module) ensureScanner(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := meshtls.Dial(addr)
 	if err != nil {
 		return fmt.Errorf("dial scanner: %w", err)
 	}
@@ -626,12 +632,20 @@ func (m *Module) getScannerClient() scannerv1.ScannerServiceClient {
 
 // ── Event Subscriptions ─────────────────────────────────────────
 
+func (m *Module) coreClient() *client.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.mc
+}
+
 func (m *Module) subscribeToMediaEvents() {
 	deadline := time.Now().Add(30 * time.Second)
-	for m.mc == nil && time.Now().Before(deadline) {
+	mc := m.coreClient()
+	for mc == nil && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
+		mc = m.coreClient()
 	}
-	if m.mc == nil {
+	if mc == nil {
 		slog.Warn("media-automation: not connected to core, skipping event subscriptions")
 		return
 	}
@@ -662,7 +676,7 @@ func (m *Module) subscribeToMediaEvents() {
 	}
 
 	for _, et := range eventTypes {
-		ch, cancel, err := m.mc.Events.Subscribe(context.Background(), et)
+		ch, cancel, err := mc.Events.Subscribe(context.Background(), et)
 		if err != nil {
 			slog.Warn("subscribe to event", "type", et, "error", err)
 			continue
