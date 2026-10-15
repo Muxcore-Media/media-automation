@@ -24,8 +24,8 @@ github.com/Muxcore-Media/media-movies v0.1.12 h1:9enO4nUD0mVApn4P5JiZxTjB0hHrksH
 github.com/Muxcore-Media/media-movies v0.1.12/go.mod h1:4uKPePNwYnlHE5hERh4Irz+WAuypoiiTeMAjXv8YSF8=
 github.com/Muxcore-Media/media-music v0.3.2 h1:yuOxCooAm5Rorq2Fj5AOZLrr/uq+SVSx3COw75EIUxw=
 github.com/Muxcore-Media/media-music v0.3.2/go.mod h1:Be4ceYQpDFtnzTSX9OKBz0K09R3LT+hjRxu6EGTqwbc=
-github.com/Muxcore-Media/media-tvshows v0.1.13 h1:hJjSyEo5B5HSkHg+ldzkbBbskR+6lE8rOtyQxpcTbTY=
-github.com/Muxcore-Media/media-tvshows v0.1.13/go.mod h1:7+/eS3sEY1vfWK2+u27hFycfHNVYl5nvPD+UXRaLSdk=
+github.com/Muxcore-Media/media-tvshows v0.1.24 h1:vPYZYFOqIQYDyidB5wGwIYM6Jh6kd1DaVfGDRWfqrV4=
+github.com/Muxcore-Media/media-tvshows v0.1.24/go.mod h1:5JgGvv49swGqegApGHQDiBoBGOkqIzpMKMOqdvYG7kA=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=

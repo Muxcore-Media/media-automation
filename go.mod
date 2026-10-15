@@ -16,7 +16,7 @@ require (
 	github.com/Muxcore-Media/media-custom-formats v0.1.15
 	github.com/Muxcore-Media/media-movies v0.1.12
 	github.com/Muxcore-Media/media-music v0.3.2
-	github.com/Muxcore-Media/media-tvshows v0.1.13
+	github.com/Muxcore-Media/media-tvshows v0.1.24
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.55.0
