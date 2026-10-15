@@ -22,8 +22,8 @@ github.com/Muxcore-Media/media-custom-formats v0.1.12 h1:E8UsQJXkT1FjAcEWAdfPjcJ
 github.com/Muxcore-Media/media-custom-formats v0.1.12/go.mod h1:d+nQVuoHMPxpU/3A8GfK0uFYSnGbQPXm9meMi/J6qyY=
 github.com/Muxcore-Media/media-movies v0.1.12 h1:9enO4nUD0mVApn4P5JiZxTjB0hHrksHvXM+e3v3wHJ8=
 github.com/Muxcore-Media/media-movies v0.1.12/go.mod h1:4uKPePNwYnlHE5hERh4Irz+WAuypoiiTeMAjXv8YSF8=
-github.com/Muxcore-Media/media-music v0.3.0 h1:4MquGSMrZqb0yiWMvkCV2gFCwTSnFQChfQ0zNAB8gBg=
-github.com/Muxcore-Media/media-music v0.3.0/go.mod h1:tlQJDPGKY9KDz4C9uUiYHr77+ZD3nHPecU9XXGm/sCc=
+github.com/Muxcore-Media/media-music v0.3.2 h1:yuOxCooAm5Rorq2Fj5AOZLrr/uq+SVSx3COw75EIUxw=
+github.com/Muxcore-Media/media-music v0.3.2/go.mod h1:Be4ceYQpDFtnzTSX9OKBz0K09R3LT+hjRxu6EGTqwbc=
 github.com/Muxcore-Media/media-tvshows v0.1.13 h1:hJjSyEo5B5HSkHg+ldzkbBbskR+6lE8rOtyQxpcTbTY=
 github.com/Muxcore-Media/media-tvshows v0.1.13/go.mod h1:7+/eS3sEY1vfWK2+u27hFycfHNVYl5nvPD+UXRaLSdk=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
