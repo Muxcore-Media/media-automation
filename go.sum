@@ -20,8 +20,8 @@ github.com/Muxcore-Media/downloader-sabnzbd v0.1.6 h1:S0VPTku5o902iJnHdR5FIyjg0P
 github.com/Muxcore-Media/downloader-sabnzbd v0.1.6/go.mod h1:rjnScgqVjDQdKzS9bx+t/izBd+l0JbDaw9vonX8RLpU=
 github.com/Muxcore-Media/media-custom-formats v0.1.15 h1:yYZMqYLwacs8QlzEQc9cskCGPPWbGKISOnvBOBsPgxk=
 github.com/Muxcore-Media/media-custom-formats v0.1.15/go.mod h1:AKBsW7UfuMmx5fp8PZNWyiXZMdYJyZStf89boRvdOOU=
-github.com/Muxcore-Media/media-movies v0.1.12 h1:9enO4nUD0mVApn4P5JiZxTjB0hHrksHvXM+e3v3wHJ8=
-github.com/Muxcore-Media/media-movies v0.1.12/go.mod h1:4uKPePNwYnlHE5hERh4Irz+WAuypoiiTeMAjXv8YSF8=
+github.com/Muxcore-Media/media-movies v0.1.24 h1:J5/+/LObUFbd0cdZdOtkP+jq8T2M4XdGggFWZKRqzBc=
+github.com/Muxcore-Media/media-movies v0.1.24/go.mod h1:FxMayVH1G3fzAFVC1YTqv0Bg4qCb6aZ+F0TzJYov/o0=
 github.com/Muxcore-Media/media-music v0.3.2 h1:yuOxCooAm5Rorq2Fj5AOZLrr/uq+SVSx3COw75EIUxw=
 github.com/Muxcore-Media/media-music v0.3.2/go.mod h1:Be4ceYQpDFtnzTSX9OKBz0K09R3LT+hjRxu6EGTqwbc=
 github.com/Muxcore-Media/media-tvshows v0.1.24 h1:vPYZYFOqIQYDyidB5wGwIYM6Jh6kd1DaVfGDRWfqrV4=
